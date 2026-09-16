@@ -1677,8 +1677,17 @@ async function buildDatiArchivioExport(sezioni){
      recuperabile fuori dall'app (nessuna cartella di sistema è scrivibile da una PWA su iOS),
      salvando questo file in Files/iCloud e reimportandolo su qualsiasi dispositivo. */
   if(sel.verbali){
+    // sel.verbaliCantieri, se presente, filtra per cantiere (id, o '' per i verbali il cui
+    // cantiere non esiste più in locale): permette di scegliere quali cantieri includere nel
+    // backup invece di esportare sempre l'intero archivio verbali.
+    const cantieriFiltro = Array.isArray(sel.verbaliCantieri) ? sel.verbaliCantieri : null;
+    const passaFiltro = entry => {
+      if(!cantieriFiltro) return true;
+      const haCantiereLocale = DB.cantieri.some(c=>c.id===entry.cantiereId);
+      return cantieriFiltro.includes(haCantiereLocale ? entry.cantiereId : '');
+    };
     const full = [];
-    for(const entry of DB.verbaliIndex){
+    for(const entry of DB.verbaliIndex.filter(passaFiltro)){
       const v = await sget('verbale:'+entry.id, null);
       if(v) full.push(v);
     }
@@ -1700,7 +1709,14 @@ async function esportaDatiArchivio(sezioni){
     if(sel.frasi) parts.push('osservanze');
     if(sel.fasiLavoro) parts.push('fasi-lavoro');
     if(sel.destinatari) parts.push('destinatari');
-    if(sel.verbali) parts.push('verbali');
+    if(sel.verbali){
+      const tuttiICantieri = DB.cantieri.length + (DB.verbaliIndex.some(v=>!DB.cantieri.some(c=>c.id===v.cantiereId))?1:0);
+      const soloUnCantiere = Array.isArray(sel.verbaliCantieri) && sel.verbaliCantieri.length===1 && sel.verbaliCantieri.length<tuttiICantieri;
+      if(soloUnCantiere){
+        const c = DB.cantieri.find(x=>x.id===sel.verbaliCantieri[0]);
+        parts.push('verbali-' + (c ? c.nome.replace(/[^a-z0-9]+/gi,'_') : 'senza-cantiere'));
+      } else parts.push('verbali');
+    }
     const filename = `gdg-dati-${parts.join('-')}-${todayISO()}.json`;
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -1831,6 +1847,14 @@ function viewTrasferimentoDati(){
   const preview = stato && stato.parsed;
 
   const fasiLavoroVociCount = (DB.fasiLavoro||[]).reduce((n,c)=>n+(c.voci||[]).length, 0);
+  // conteggio verbali per cantiere, per permettere di scegliere quali cantieri includere nel
+  // backup (es. per tenere in locale solo i verbali dei cantieri ancora attivi).
+  const verbaliCantieriHtml = DB.cantieri.map(c=>{
+    const n = DB.verbaliIndex.filter(v=>v.cantiereId===c.id).length;
+    return `<label class="phrase-item" style="padding-left:22px;"><input type="checkbox" class="exp-verbali-cantiere" value="${c.id}" ${n?'checked':''} ${n?'':'disabled'}><div class="txt">${esc(c.nome)} (${n})</div></label>`;
+  }).join('') || `<div class="hint" style="padding-left:22px;">Nessun cantiere archiviato.</div>`;
+  const senzaCantiere = DB.verbaliIndex.filter(v=>!DB.cantieri.some(c=>c.id===v.cantiereId)).length;
+  const verbaliSenzaCantiereHtml = senzaCantiere ? `<label class="phrase-item" style="padding-left:22px;"><input type="checkbox" class="exp-verbali-cantiere" value="" checked><div class="txt">Senza cantiere riconosciuto (${senzaCantiere})</div></label>` : '';
   const exportSezioniHtml = `
     <div class="hint" style="margin:2px 0 10px;">Scegli cosa includere nel file:</div>
     <label class="phrase-item"><input type="checkbox" id="exp-sel-cantieri" checked><div class="txt">Cantieri (${DB.cantieri.length})</div></label>
@@ -1840,6 +1864,10 @@ function viewTrasferimentoDati(){
     <label class="phrase-item"><input type="checkbox" id="exp-sel-fasiLavoro" checked><div class="txt">Fasi di lavoro (${(DB.fasiLavoro||[]).length} categorie, ${fasiLavoroVociCount} voci)</div></label>
     <label class="phrase-item"><input type="checkbox" id="exp-sel-destinatari" checked><div class="txt">Destinatari (${DB.destinatari.length})</div></label>
     <label class="phrase-item"><input type="checkbox" id="exp-sel-verbali" checked><div class="txt">Verbali completi, foto e firme incluse (${DB.verbaliIndex.length})</div></label>
+    <div id="exp-verbali-cantieri-wrap">
+      <div class="hint" style="margin:2px 0 4px;padding-left:22px;">Scegli quali cantieri includere:</div>
+      ${verbaliCantieriHtml}${verbaliSenzaCantiereHtml}
+    </div>
     <div class="hint" style="margin-top:8px;">Se esporti solo il Personale, le Imprese vengono comunque incluse nel file (solo come riferimento) per mantenere i collegamenti corretti in fase di importazione.</div>
   `;
 
@@ -3310,6 +3338,12 @@ function attachHandlers(){
   });
 
   // trasferimento dati (esporta/importa cantieri, imprese, personale) — sempre additivo, mai sovrascrive
+  const expSelVerbaliEl = document.getElementById('exp-sel-verbali');
+  const expVerbaliCantieriWrap = document.getElementById('exp-verbali-cantieri-wrap');
+  if(expSelVerbaliEl && expVerbaliCantieriWrap){
+    expVerbaliCantieriWrap.hidden = !expSelVerbaliEl.checked;
+    expSelVerbaliEl.addEventListener('change', ()=>{ expVerbaliCantieriWrap.hidden = !expSelVerbaliEl.checked; });
+  }
   const exportDatiBtn = app.querySelector('[data-export-dati]');
   if(exportDatiBtn) exportDatiBtn.addEventListener('click', ()=>{
     const sel = {
@@ -3320,7 +3354,9 @@ function attachHandlers(){
       fasiLavoro: !!document.getElementById('exp-sel-fasiLavoro')?.checked,
       destinatari: !!document.getElementById('exp-sel-destinatari')?.checked,
       verbali: !!document.getElementById('exp-sel-verbali')?.checked,
+      verbaliCantieri: [...document.querySelectorAll('.exp-verbali-cantiere:checked')].map(el=>el.value),
     };
+    if(sel.verbali && sel.verbaliCantieri.length===0){ toast('Seleziona almeno un cantiere da includere nei verbali, oppure deseleziona "Verbali completi".'); return; }
     esportaDatiArchivio(sel);
   });
   const importDatiFile = document.getElementById('import-dati-file');
