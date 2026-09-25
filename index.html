@@ -13,12 +13,99 @@
 <meta name="apple-mobile-web-app-title" content="Verbali CSE">
 <meta name="format-detection" content="telephone=no">
 <link rel="manifest" href="manifest.json">
-<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192x192.png">
-<link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon-180.png">
+<link rel="icon" href="icons/icon-192x192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon-180.png">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore-compat.js"></script>
+<script type="module">
+/* ======================= FIREBASE (account personali multi-dispositivo) =======================
+   Progetto Firebase dedicato "verbali-cse-account", separato e indipendente dal progetto Firebase
+   "bozza-verbali-GDG" usato dall'altra app (repository GitHub biba-boop/verbali-cse-pwa): nessuno
+   dei due progetti tocca l'altro. Ogni CSE ha un proprio account personale (email + password); i
+   dati di ciascun account sono privati e visibili solo a quell'account (vedi le regole di sicurezza
+   di Firestore: /users/{uid}/** leggibile e scrivibile solo da chi ha effettuato l'accesso con
+   quello stesso uid — nessuna condivisione tra CSE diversi).
+   Piano Firebase gratuito (Spark): nessun Firebase Storage, quindi in questa prima fase sincronizza
+   solo le anagrafiche/librerie "leggere" (cantieri, imprese, personale, destinatari, librerie di
+   frasi, indice dei verbali) — vedi initFirebaseSync() più sotto nello script principale. Foto e
+   firme, e il contenuto completo dei singoli verbali, restano per ora solo sul dispositivo.
+   Se questo script non riesce a caricarsi (rete assente, dominio bloccato da un firewall aziendale…)
+   l'app continua a funzionare normalmente in locale, solo senza sincronizzazione multi-dispositivo. */
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import {
+  getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword,
+  signOut, onAuthStateChanged
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import {
+  getFirestore, doc, getDoc, setDoc, onSnapshot
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyBhrWSm1ajYYNokpFVqsZfqExH9HzgLZk0",
+  authDomain: "verbali-cse-account.firebaseapp.com",
+  projectId: "verbali-cse-account",
+  storageBucket: "verbali-cse-account.firebasestorage.app",
+  messagingSenderId: "515289589059",
+  appId: "1:515289589059:web:e007600179346ca826fbf6"
+};
+
+let fbApp, fbAuth, fbDb;
+try{
+  fbApp = initializeApp(firebaseConfig);
+  fbAuth = getAuth(fbApp);
+  fbDb = getFirestore(fbApp);
+}catch(e){ console.error('Firebase non disponibile', e); }
+
+function mapAuthError(err){
+  const code = (err && err.code) || '';
+  const table = {
+    'auth/email-already-in-use': 'Esiste già un account online con questa email.',
+    'auth/invalid-email': 'Indirizzo email non valido.',
+    'auth/weak-password': 'Password troppo corta (minimo 6 caratteri).',
+    'auth/invalid-credential': 'Email o password non corrette.',
+    'auth/wrong-password': 'Email o password non corrette.',
+    'auth/user-not-found': 'Email o password non corrette.',
+    'auth/too-many-requests': 'Troppi tentativi. Riprova tra qualche minuto.',
+    'auth/network-request-failed': 'Connessione assente: controlla la rete e riprova.'
+  };
+  return table[code] || ('Operazione non riuscita' + (err && err.message ? (': ' + err.message) : '.'));
+}
+
+window.FB = {
+  ready: !!fbAuth,
+  onAuthChange(cb){ if(fbAuth) onAuthStateChanged(fbAuth, cb); },
+  async signUp(email, password){
+    if(!fbAuth) throw new Error('Servizio account online non disponibile (verifica la connessione a Internet).');
+    try{ const cred = await createUserWithEmailAndPassword(fbAuth, email, password); return cred.user; }
+    catch(e){ throw new Error(mapAuthError(e)); }
+  },
+  async signIn(email, password){
+    if(!fbAuth) throw new Error('Servizio account online non disponibile (verifica la connessione a Internet).');
+    try{ const cred = await signInWithEmailAndPassword(fbAuth, email, password); return cred.user; }
+    catch(e){ throw new Error(mapAuthError(e)); }
+  },
+  async signOutUser(){ if(fbAuth) await signOut(fbAuth); },
+  async getDoc(uid, key){
+    if(!fbDb) return null;
+    const ref = doc(fbDb, 'users', uid, 'sync', key);
+    const snap = await getDoc(ref);
+    return snap.exists() ? snap.data().value : null;
+  },
+  async setDoc(uid, key, value){
+    if(!fbDb) return;
+    const ref = doc(fbDb, 'users', uid, 'sync', key);
+    await setDoc(ref, { value, aggiornatoIl: new Date().toISOString() });
+  },
+  watchDoc(uid, key, cb){
+    if(!fbDb) return ()=>{};
+    const ref = doc(fbDb, 'users', uid, 'sync', key);
+    return onSnapshot(ref, snap=>{ if(snap.exists()) cb(snap.data().value); }, err=>console.error('sincronizzazione cloud in ascolto non riuscita per', key, err));
+  }
+};
+window.dispatchEvent(new Event('fb-ready'));
+</script>
 <style>
   /* Font usati SOLO dalla schermata "Aggiornamento in corso" (vedi .update-screen più sotto),
      riprodotta identica al mockup fornito da GDG STUDIO: il resto dell'app usa il font di sistema
@@ -160,6 +247,8 @@
   .phrase-cat.daAggiungere{background:var(--blue-bg);border-left:4px solid var(--blue);}
   .phrase-cat.noteSpecifiche{background:var(--red-bg);border-left:4px solid var(--red);}
   .phrase-cat.prescrizioni{background:var(--amber-bg);border-left:4px solid var(--amber);}
+  .phrase-cat.riunione{background:var(--blue-bg);border-left:4px solid var(--blue);}
+  .phrase-cat.riunione .cat-title{color:var(--blue);}
   .phrase-cat .cat-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px;
     cursor:pointer;list-style:none;display:flex;align-items:center;justify-content:space-between;gap:8px;}
   .phrase-cat .cat-title::-webkit-details-marker{display:none;}
@@ -170,6 +259,34 @@
   .phrase-cat.daAggiungere .cat-title{color:var(--blue);}
   .phrase-cat.noteSpecifiche .cat-title{color:var(--red);}
   .phrase-cat.prescrizioni .cat-title{color:var(--amber);}
+  /* Libreria fasi di lavoro: stesse 4 varianti colorate della Libreria osservanze (richiesta 23/09/2026
+     "usa lo stesso stile delle osservazioni"), ma con classi proprie (fasi-c1..fasi-c4) invece di
+     riusare standard/daAggiungere/noteSpecifiche/prescrizioni, per non far scattare per errore anche
+     il listener/lo stato "a tendina" delle categorie di Osservanze (chiave condivisa per nome classe). */
+  .phrase-cat.fasi-c1{background:var(--green-bg);border-left:4px solid var(--green);}
+  .phrase-cat.fasi-c1 .cat-title{color:var(--green);}
+  .phrase-cat.fasi-c2{background:var(--blue-bg);border-left:4px solid var(--blue);}
+  .phrase-cat.fasi-c2 .cat-title{color:var(--blue);}
+  .phrase-cat.fasi-c3{background:var(--red-bg);border-left:4px solid var(--red);}
+  .phrase-cat.fasi-c3 .cat-title{color:var(--red);}
+  .phrase-cat.fasi-c4{background:var(--amber-bg);border-left:4px solid var(--amber);}
+  .phrase-cat.fasi-c4 .cat-title{color:var(--amber);}
+  /* Libreria note riunioni: 6 categorie fisse (richiesta 24/09/2026 via commento sull'Artifact,
+     "suddividi e crea 6 categorie..."), stesso meccanismo a rotazione di colore di fasi-c1..c4
+     (solo 4 tinte disponibili per 6 categorie), ma con classi proprie (riu-c1..riu-c4) per lo stesso
+     motivo di fasi-c1..c4 sopra: non far scattare per errore lo stato "a tendina" di altre librerie. */
+  .phrase-cat.riu-c1{background:var(--green-bg);border-left:4px solid var(--green);}
+  .phrase-cat.riu-c1 .cat-title{color:var(--green);}
+  .phrase-cat.riu-c2{background:var(--blue-bg);border-left:4px solid var(--blue);}
+  .phrase-cat.riu-c2 .cat-title{color:var(--blue);}
+  .phrase-cat.riu-c3{background:var(--red-bg);border-left:4px solid var(--red);}
+  .phrase-cat.riu-c3 .cat-title{color:var(--red);}
+  .phrase-cat.riu-c4{background:var(--amber-bg);border-left:4px solid var(--amber);}
+  .phrase-cat.riu-c4 .cat-title{color:var(--amber);}
+  /* nome categoria elastico (flex:1): cosi' il conteggio "(N voci)" che lo segue resta sempre alla
+     stessa posizione, allineato tra tutte le categorie invece di seguire subito un nome più corto
+     o più lungo (richiesta 23/09/2026: "non è allineato con le altre categorie"). */
+  .fasi-cat-name{flex:1 1 0%;min-width:0;}
   .phrase-item{display:flex;align-items:flex-start;gap:8px;padding:7px 0;border-top:1px solid rgba(0,0,0,.06);}
   .phrase-item:first-of-type{border-top:none;}
   .phrase-item input[type=checkbox]{margin-top:3px;flex-shrink:0;width:18px;height:18px;}
@@ -189,7 +306,10 @@
   .photo-card .cap input{font-size:12px;padding:6px 7px;}
   .photo-card .fase-pick{padding:6px 8px 0;display:flex;flex-direction:column;gap:5px;}
   .photo-card .fase-pick select{font-size:12px;padding:6px 7px;min-height:34px;}
-  .photo-card .rm{width:100%;border:none;border-top:1px solid var(--line);background:#fff;color:var(--red);
+  .photo-card .actions{display:flex;border-top:1px solid var(--line);}
+  .photo-card .actions .retake{flex:1;border:none;border-right:1px solid var(--line);background:#fff;color:var(--muted);
+    font-size:12px;padding:6px;cursor:pointer;text-align:center;}
+  .photo-card .actions .rm{flex:1;width:auto;border:none;background:#fff;color:var(--red);
     font-size:12px;padding:6px;cursor:pointer;}
   .add-photo-btn{border:2px dashed var(--line);border-radius:8px;background:#fafbfc;color:var(--muted);
     padding:22px 10px;text-align:center;font-size:13px;cursor:pointer;}
@@ -311,6 +431,17 @@
     justify-content:center;z-index:200;color:#fff;font-size:14px;flex-direction:column;gap:10px;}
   .spinner{width:34px;height:34px;border:3px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;
     animation:spin .8s linear infinite;}
+
+  /* conferma di eliminazione rinforzata (richiesta 23/09/2026): al posto del semplice confirm()
+     del browser, una finestra che obbliga a digitare una parola prima di poter eliminare davvero.
+     Creata/rimossa via JS (vedi confirmEliminaConTesto), non fa parte del ciclo render(). */
+  .confirm-modal-overlay{position:fixed;inset:0;background:rgba(18,40,63,.55);display:flex;
+    align-items:center;justify-content:center;z-index:210;padding:20px;}
+  .confirm-modal-box{background:#fff;border-radius:var(--radius);padding:18px;max-width:340px;
+    width:100%;box-shadow:0 8px 30px rgba(0,0,0,.35);}
+  .confirm-modal-box .confirm-modal-msg{margin:0 0 10px;font-size:14px;font-weight:600;color:var(--ink);line-height:1.4;}
+  .confirm-modal-box .confirm-modal-hint{margin:0 0 8px;font-size:12.5px;color:var(--muted);line-height:1.4;}
+  .confirm-modal-box .confirm-modal-hint b{color:var(--red);}
   @keyframes spin{to{transform:rotate(360deg);}}
 
   /* ===== printable document — matches the official Italgas Reti
@@ -355,11 +486,15 @@
   .doc-cover-box{border:1px solid #007AC9;border-radius:2px;padding:10px 18px;display:inline-block;
     color:#007AC9;font-family:'Gill Sans MT',Corbel,Calibri,Arial,sans-serif;font-weight:600;letter-spacing:.3px;font-size:15px;}
 
-  /* VISITA combo box */
+  /* VISITA combo box (per il verbale di riunione il testo del tag e' piu' lungo — "RIUNIONE
+     INIZIALE DI COORDINAMENTO" invece del solo "RIUNIONE" — quindi il tag deve poter restringersi
+     e andare a capo su piu' righe invece di sconfinare fuori dal riquadro sulle larghezze strette;
+     "VISITA" resta comunque su una riga sola, avendo margine di sovra piu' che sufficiente) */
   .doc-visita-wrap{border:1px solid #000;display:flex;margin-bottom:12px;overflow:hidden;}
   .doc-visita-tag{background:var(--doc-navy);color:#fff;font-weight:800;font-style:italic;font-size:15px;
-    display:flex;align-items:center;justify-content:center;padding:10px 20px;flex-shrink:0;}
-  .doc-visita-fields{flex:1;display:flex;align-items:center;gap:5px;padding:10px 14px;font-size:12px;flex-wrap:wrap;}
+    display:flex;align-items:center;justify-content:center;text-align:center;line-height:1.2;
+    padding:10px 14px;flex:0 1 auto;min-width:0;}
+  .doc-visita-fields{flex:1 1 150px;min-width:150px;display:flex;align-items:center;gap:5px;padding:10px 14px;font-size:12px;flex-wrap:wrap;}
 
   /* attivita table (with navy header row + pale-blue fill cells) */
   /* riquadro orari ATTIVITA' ridotto: meno padding e testo più piccolo, per lasciare spazio alle foto sotto */
@@ -404,6 +539,15 @@
     .row3{grid-template-columns:1fr;}
     .grid-menu{grid-template-columns:1fr;}
   }
+  /* Tablet/iPad (portrait e landscape): la colonna centrale da 720px lasciava grandi fasce vuote
+     ai lati su schermi larghi >=700px, in entrambi gli orientamenti — qui la si allarga. La griglia
+     resta a 2 colonne (stessa struttura del mobile): così "Nuovo verbale" e "Verbale riunione
+     iniziale" restano da soli, più larghi, sulla prima riga, e tutti gli altri pulsanti scalano di
+     conseguenza nella stessa griglia, allineati con quelli sopra. */
+  @media (min-width:700px){
+    #app,.brand-header{max-width:1100px;}
+    .fab{max-width:1072px;}
+  }
   .btn,.iconbtn,.chip,.menu-btn,.item-row .actions button{min-height:40px;}
   input[type=checkbox],input[type=radio]{min-width:18px;min-height:18px;}
 
@@ -426,9 +570,16 @@
    IndexedDB (offline, no ~5MB cap like localStorage — needed for embedded photos), falling back to
    localStorage, then in-memory, if unavailable. */
 const KEYS = {cantieri:'cantieri',imprese:'imprese',personale:'personale',frasi:'frasi',
+              frasiRiunione:'frasiRiunione', frasiRiunioneLibVersion:'frasiRiunioneLibVersion',
               destinatari:'destinatari', index:'verbali-index', settings:'settings', fasiLavoro:'fasiLavoro',
               fasiLavoroLibVersion:'fasiLavoroLibVersion', maintenanceMode:'maintenance-mode',
-              notifyWhenReady:'notify-when-ready'};
+              notifyWhenReady:'notify-when-ready', cestino:'cestino'};
+
+/* Le 8 voci "leggere" sincronizzate sull'account online (Firebase), quando un CSE è collegato con un
+   account personale: NON includono le foto/firme né il contenuto completo dei singoli verbali (solo
+   il loro indice riassuntivo) — vedi il blocco FIREBASE più sotto (initFirebaseSync). */
+const FIRESTORE_SYNC_KEYS = [KEYS.cantieri, KEYS.imprese, KEYS.personale, KEYS.frasi,
+                              KEYS.frasiRiunione, KEYS.destinatari, KEYS.fasiLavoro, KEYS.index];
 
 /* Password di default dell'area amministrazione nascosta (si raggiunge toccando 6 volte il logo
    in alto). Usata solo finché nelle impostazioni non ne viene salvata una diversa (cambiabile dalla
@@ -487,15 +638,37 @@ async function sset(key, val){
         tx.objectStore(IDB_STORE).put(val, key);
         tx.oncomplete = resolve; tx.onerror = ()=>reject(tx.error);
       });
+      pushToCloud(key, val);
       return;
     }catch(e){ console.warn('IndexedDB non disponibile, uso storage di riserva.', e); _idbBroken = true; }
   }
-  try{ localStorage.setItem('vcse:'+key, JSON.stringify(val)); }
+  try{ localStorage.setItem('vcse:'+key, JSON.stringify(val)); pushToCloud(key, val); }
   catch(e){
     _memStore[key] = val;
     console.error('storage set failed (solo in memoria, non persistente)',key,e);
     toast('Spazio insufficiente: i dati non verranno salvati. Elimina qualche foto o verbale.');
   }
+}
+/* Inoltra al cloud (Firestore) solo le 8 voci sincronizzate, solo se un account online è collegato,
+   e mai quando il valore in arrivo proviene già dal cloud stesso (altrimenti si creerebbe un loop
+   infinito dispositivo→cloud→dispositivo). Fire-and-forget: un eventuale errore di rete non blocca
+   né rallenta il salvataggio locale, che resta sempre la fonte di verità immediata su un dispositivo. */
+function pushToCloud(key, val){
+  if(_fbApplyingRemote) return;
+  if(!CLOUD_USER) return;
+  if(!FIRESTORE_SYNC_KEYS.includes(key)) return;
+  if(!window.FB || !window.FB.ready) return;
+  window.FB.setDoc(CLOUD_USER.uid, key, val).catch(e=>console.error('sincronizzazione cloud non riuscita per', key, e));
+}
+function waitForFB(timeoutMs){
+  timeoutMs = timeoutMs || 8000;
+  if(window.FB) return Promise.resolve(window.FB);
+  return new Promise(resolve=>{
+    let done = false;
+    const finish = ()=>{ if(done) return; done = true; resolve(window.FB || null); };
+    window.addEventListener('fb-ready', finish, {once:true});
+    setTimeout(finish, timeoutMs);
+  });
 }
 async function sdel(key){
   if(!_idbBroken){
@@ -519,7 +692,13 @@ function fmtDate(iso){ if(!iso) return '—'; const [y,m,d]=iso.split('-'); retu
 function esc(s){ return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 /* ======================= APP STATE ======================= */
-let DB = { cantieri:[], imprese:[], personale:[], frasi:[], destinatari:[], settings:{}, verbaliIndex:[], fasiLavoro:[] };
+let DB = { cantieri:[], imprese:[], personale:[], frasi:[], frasiRiunione:[], destinatari:[], settings:{}, verbaliIndex:[], fasiLavoro:[] };
+/* Account online (Firebase) collegato a questo dispositivo, null se nessun CSE ha eseguito l'accesso
+   con un account personale — in tal caso l'app funziona come sempre, solo in locale. */
+let CLOUD_USER = null;
+let _fbApplyingRemote = false; // true mentre si applica un aggiornamento arrivato da un altro dispositivo
+let _fbUnsubscribers = [];
+let FB_UI_MODE = 'login'; // 'login' oppure 'signup': quale modulo mostrare nel riquadro "Account online"
 let CURRENT_VERBALE = null;
 let IMPORT_PERSONALE = null; // {impresaId, raw, rows:null|Array<{nome,cognome,mansione}>}
 let PERSONALE_FILTRI = {search:'', impresaId:'', mansione:'', ordine:'nome-asc'}; // sezione "Personale": ricerca + filtri per impresa/mansione/ordine
@@ -532,6 +711,14 @@ let PHRASE_CAT_OPEN = {};
 /* Stesso meccanismo di PHRASE_CAT_OPEN, per i riquadri per impresa nel passaggio "Presenti" del
    wizard. Chiave = id impresa; assente/false = chiuso. */
 let PERS_GROUP_OPEN = {};
+/* Stesso meccanismo di PHRASE_CAT_OPEN, per le categorie nella Libreria fasi di lavoro (richiesta
+   23/09/2026: "queste categorie devono avere un menù a tendina"). Chiave = nome categoria; assente/false = chiuso. */
+let FASI_LIB_CAT_OPEN = {};
+/* Stesso meccanismo di PHRASE_CAT_OPEN, per i menù a tendina per iniziale nella sezione Imprese
+   (richiesta 23/09/2026: "crea un menù a tendina per ogni lettera che contenga tutte le imprese
+   che iniziano con quella lettera"). Chiave = lettera (o "#" per nomi che non iniziano per lettera);
+   assente/false = chiuso. */
+let IMPRESE_LETTERA_OPEN = {};
 let ROUTE = {name:'accesso'};
 let toastTimer=null;
 /* ======================= AREA ADMIN NASCOSTA / MODALITÀ AGGIORNAMENTO =======================
@@ -558,6 +745,52 @@ function showSpinner(msg){
   document.body.appendChild(el);
 }
 function hideSpinner(){ const el=document.getElementById('spinner-ov'); if(el) el.remove(); }
+
+/* Conferma rinforzata generica (richiesta 23/09/2026, "quando elimino prima mi deve chiedere la
+   conferma e devo digitare 'elimina'", estesa lo stesso giorno a "anche qua serve la conferma con
+   scritto 'confermato'" per il pulsante "Segna come completato"): al posto del semplice confirm()
+   del browser (solo OK/Annulla), mostra una finestra che obbliga a digitare una parola prestabilita
+   prima che il pulsante di conferma si attivi. messaggio = testo mostrato sopra il campo; parola =
+   parola da digitare; onConferma = eseguita solo se l'utente digita la parola giusta e conferma
+   (mai automaticamente); opts.labelBtn/opts.btnClass personalizzano il pulsante di conferma (di
+   default "Elimina"/rosso, adatto alle eliminazioni). Riutilizzabile per qualsiasi conferma
+   rinforzata dell'app. */
+function confirmConParola(messaggio, parola, onConferma, opts){
+  opts = opts || {};
+  const labelBtn = opts.labelBtn || 'Elimina';
+  const btnClass = opts.btnClass || 'btn danger';
+  const parolaLower = parola.toLowerCase();
+  const ov = document.createElement('div');
+  ov.className = 'confirm-modal-overlay';
+  ov.innerHTML = `
+    <div class="confirm-modal-box">
+      <p class="confirm-modal-msg">${esc(messaggio)}</p>
+      <p class="confirm-modal-hint">Per confermare, scrivi <b>"${esc(parola)}"</b> qui sotto:</p>
+      <input type="text" id="confirm-modal-input" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder='Scrivi "${esc(parola)}"'>
+      <div class="btn-row" style="margin-top:14px;">
+        <button class="btn secondary" id="confirm-modal-cancel" type="button">Annulla</button>
+        <button class="${btnClass}" id="confirm-modal-ok" type="button" disabled>${esc(labelBtn)}</button>
+      </div>
+    </div>`;
+  document.body.appendChild(ov);
+  const input = ov.querySelector('#confirm-modal-input');
+  const okBtn = ov.querySelector('#confirm-modal-ok');
+  const chiudi = () => ov.remove();
+  const matcha = () => input.value.trim().toLowerCase() === parolaLower;
+  input.addEventListener('input', ()=>{ okBtn.disabled = !matcha(); });
+  input.addEventListener('keydown', e=>{
+    if(e.key==='Enter' && matcha()){ chiudi(); onConferma(); }
+    else if(e.key==='Escape'){ chiudi(); }
+  });
+  ov.querySelector('#confirm-modal-cancel').addEventListener('click', chiudi);
+  okBtn.addEventListener('click', ()=>{ if(!matcha()) return; chiudi(); onConferma(); });
+  ov.addEventListener('click', e=>{ if(e.target===ov) chiudi(); });
+  setTimeout(()=>input.focus(), 50);
+}
+/* Alias storico: conferma di eliminazione con la parola "elimina" (comportamento invariato). */
+function confirmEliminaConTesto(messaggio, onConferma){
+  confirmConParola(messaggio, 'elimina', onConferma, {labelBtn:'Elimina', btnClass:'btn danger'});
+}
 
 /* ======================= SEED DATA (first run) ======================= */
 const SEED_FRASI = [
@@ -588,6 +821,40 @@ const SEED_FRASI = [
  {categoria:'prescrizioni', testo:"Si ricorda all'impresa di installare su tutte le aree di lavoro distribuite nell'area i titoli autorizzativi ottenuti dagli enti preposti (permesso di manomissione, ordinanza, notifica)."},
  {categoria:'prescrizioni', testo:"Si ricorda all'impresa il posizionamento di idonee passerelle di attraversamento scavo – non è consentito scavalcare lo stesso anche in caso di larghezza ridotta."},
 ].map(f=>({id:uid(), ...f}));
+
+// Libreria dedicata alle Note del CSE del verbale di riunione iniziale (Allegato 8): frasi selezionabili
+// in aggiunta al testo libero (richiesta 23/09/2026), suddivise in 6 categorie fisse (richiesta
+// 24/09/2026 via commento sull'Artifact: "suddividi e crea 6 categorie: VARIAZIONI PROGETTUALI,
+// COMUNICAZIONI E PRESCRIZIONI POS, DISPOSIZIONI PREVISTE DA PSC, ORGANIZZAZIONE DATORI DI LAVORO E
+// AUTONOMI, OSSERVANZA RIUNIONI CSE E NOTE DEL CSE") — stesso meccanismo a categorie fisse di
+// CAT_LABELS/CAT_ORDER (Libreria osservanze), vedi CAT_LABELS_RIUNIONE/CAT_ORDER_RIUNIONE più sotto.
+const SEED_FRASI_RIUNIONE = [
+ {categoria:'disposizioniPsc', testo:"Si ricorda l'obbligo di rispettare le disposizioni del PSC e dei POS aziendali per tutta la durata dei lavori."},
+ {categoria:'comunicazioniPos', testo:"Si richiama l'attenzione delle imprese sull'uso obbligatorio dei DPI previsti per le lavorazioni in programma."},
+ {categoria:'variazioniProgettuali', testo:"Si concorda che eventuali variazioni alle fasi lavorative dovranno essere preventivamente comunicate al CSE."},
+ {categoria:'organizzazioneDatori', testo:"Si ricorda l'obbligo di mantenere aggiornata la cartellonistica di cantiere e la segnaletica stradale."},
+ {categoria:'osservanzaRiunioni', testo:"Si richiama la necessità di garantire il coordinamento tra le imprese esecutrici per le lavorazioni interferenti."},
+ {categoria:'organizzazioneDatori', testo:"Si ricorda l'obbligo di comunicare tempestivamente al CSE l'ingresso in cantiere di nuove imprese o lavoratori autonomi."},
+ {categoria:'noteCse', testo:"Nulla da segnalare."}
+].map(f=>({id:uid(), ...f}));
+/* Etichette e ordine di visualizzazione delle 6 categorie della Libreria note riunioni. Il nome della
+   quarta categoria richiesta ("ORGANIZZAZIONE DATOR DI LAVORO E AUTONOMI") viene qui corretto nel
+   refuso "DATOR" → "DATORI" (concorda con il plurale "autonomi" che segue). Le etichette sono in
+   maiuscolo/minuscolo normale: il maiuscolo nell'interfaccia (come per CAT_LABELS) arriva dal CSS
+   (.cat-title{text-transform:uppercase}). */
+const CAT_LABELS_RIUNIONE = {
+  variazioniProgettuali:'Variazioni progettuali',
+  comunicazioniPos:'Comunicazioni e prescrizioni POS',
+  disposizioniPsc:'Disposizioni previste da PSC',
+  organizzazioneDatori:'Organizzazione datori di lavoro e autonomi',
+  osservanzaRiunioni:'Osservanza riunioni CSE',
+  noteCse:'Note del CSE'
+};
+const CAT_ORDER_RIUNIONE = ['variazioniProgettuali','comunicazioniPos','disposizioniPsc','organizzazioneDatori','osservanzaRiunioni','noteCse'];
+/* Libreria note riunioni: v2 introduce le 6 categorie sopra. Stesso meccanismo di
+   FASI_LAVORO_LIB_VERSION per forzare l'aggiornamento del seed (con categoria) anche sui dispositivi
+   già inizializzati con la vecchia lista piatta. */
+const FRASI_RIUNIONE_LIB_VERSION = 2;
 
 const CAT_LABELS = {
   standard:'Dati standard sempre presenti (con personale)',
@@ -692,6 +959,10 @@ const DOC_NAVY = '#183C70';
 const DOC_ALLEGATO_NUM = '10';
 const DOC_ALLEGATO_CODE = 'Allegato 10-R00';
 const DOC_ITG_CODE = 'ITG-IOP-234-R00';
+/* Verbale di riunione iniziale di coordinamento (richiesta 23/09/2026): stessa famiglia di
+   documento Italgas (ITG-IOP-234-R00), Allegato 8 invece di Allegato 10. */
+const DOC_ALLEGATO_NUM_RIUNIONE = '8';
+const DOC_ALLEGATO_CODE_RIUNIONE = 'Allegato 8-R00';
 const DOC_AGGIORNAMENTO = '03/07/2017';
 /* logo is placed at the same native size (208x88px) on every single page of the source docx — no small variant */
 function docLogoImg(){ return `<div class="doc-logo-row"><img class="doc-logo-img" src="${DOC_LOGO_SRC}" alt="Italgas Reti"></div>`; }
@@ -718,6 +989,65 @@ function impresaFixedRows(imprese, selectedImpresaId){
     return chkRow(on, label);
   }).join('');
 }
+/* Verbale di riunione (Allegato 8): stesso schema fisso a 4 righe di impresaFixedRows(), con in più
+   il referente indicato in riunione (nome e mansione) per ciascuna impresa di quel ruolo — richiesto
+   dal modello "con: [ruolo] nella persona di ... avente mansioni di ...". */
+function impresaReferentiRows(imprese){
+  return IMPRESA_RUOLI.map(ruolo=>{
+    const inRuolo = imprese.filter(ic=>ruoliOf(ic).includes(ruolo));
+    if(!inRuolo.length) return chkRow(false, `<b>${esc(ruolo)}:</b>`);
+    return inRuolo.map(ic=>{
+      const label = ic.presente===false
+        ? `<b>${esc(ruolo)}:</b> <span class="doc-u">${esc(ic.nome)}</span> (non presente a questa riunione)`
+        : `<b>${esc(ruolo)}:</b> <span class="doc-u">${esc(ic.nome)}</span> nella persona di <span class="doc-u">${esc(ic.referenteNome)||'—'}</span> avente mansioni di <span class="doc-u">${esc(ic.referenteMansione)||'—'}</span>`;
+      return chkRow(true, label);
+    }).join('');
+  }).join('');
+}
+/* Riga firma del documento stampabile (PDF/anteprima) — estratta da viewDocumento() perché serve
+   identica anche in viewDocumentoRiunione(). */
+function docSigLine(role, name, img){
+  return `<div class="doc-sigline"><div class="role">${role}</div>${img?`<img class="sig-img" src="${img}">`:''}<div class="nameline"></div><div class="name">${esc(name)||' '}</div></div>`;
+}
+// unisce le frasi selezionate dalla Libreria note riunioni con il testo libero, per il documento generato
+// (PDF e Word) del verbale di riunione iniziale — la libreria è un aiuto alla compilazione, ma nel
+// documento finale compare come un unico blocco di testo "Note del CSE".
+function noteCseTestoCompleto(v){
+  const daLibreria = (v.noteCSESelFrasi||[]).map(id=>{
+    const f = (DB.frasiRiunione||[]).find(x=>x.id===id);
+    return f ? f.testo : null;
+  }).filter(Boolean);
+  const parti = daLibreria.slice();
+  if(v.noteCSE && v.noteCSE.trim()) parti.push(v.noteCSE.trim());
+  return parti.join('\n\n');
+}
+// stesso meccanismo di noteCseTestoCompleto(), riusato per i tre punti di "Verifiche del CSE"
+// (POS / art. 102 / organizzazione) — stessa Libreria note riunioni, richiesta 24/09/2026 via
+// commento sull'Artifact ("qua bisogna poter selezionare delle note da una libreria... ed
+// aggiungere note libere", gia' fatto per "Note del CSE" e ora estesa qui per coerenza).
+function verificaTestoCompleto(v, key){
+  const ve = v.verifiche[key];
+  const daLibreria = (ve.selFrasi||[]).map(id=>{
+    const f = (DB.frasiRiunione||[]).find(x=>x.id===id);
+    return f ? f.testo : null;
+  }).filter(Boolean);
+  const parti = daLibreria.slice();
+  if(ve.testo && ve.testo.trim()) parti.push(ve.testo.trim());
+  return parti.join('\n\n');
+}
+// stesso meccanismo, per "Verifica di eventuali variazioni progettuali" (Ordine del giorno) — richiesta
+// 24/09/2026 via commento sull'Artifact ("aggiungi opzione di spuntare dalla libreria dalla categoria
+// variazioni progettuali"). Qui si selezionano frasi solo dalla categoria "variazioniProgettuali".
+function variazioniTestoCompleto(v){
+  const vz = v.ordineGiorno.variazioni;
+  const daLibreria = (vz.selFrasi||[]).map(id=>{
+    const f = (DB.frasiRiunione||[]).find(x=>x.id===id);
+    return f ? f.testo : null;
+  }).filter(Boolean);
+  const parti = daLibreria.slice();
+  if(vz.testo && vz.testo.trim()) parti.push(vz.testo.trim());
+  return parti.join('\n\n');
+}
 
 /* ======================= BOOT ======================= */
 async function boot(){
@@ -726,6 +1056,13 @@ async function boot(){
   DB.personale = await sget(KEYS.personale, []);
   DB.frasi = await sget(KEYS.frasi, null);
   if(DB.frasi === null){ DB.frasi = SEED_FRASI; await sset(KEYS.frasi, DB.frasi); }
+  DB.frasiRiunione = await sget(KEYS.frasiRiunione, null);
+  const frasiRiunioneLibVersion = await sget(KEYS.frasiRiunioneLibVersion, 0);
+  if(DB.frasiRiunione === null || frasiRiunioneLibVersion < FRASI_RIUNIONE_LIB_VERSION){
+    DB.frasiRiunione = JSON.parse(JSON.stringify(SEED_FRASI_RIUNIONE));
+    await sset(KEYS.frasiRiunione, DB.frasiRiunione);
+    await sset(KEYS.frasiRiunioneLibVersion, FRASI_RIUNIONE_LIB_VERSION);
+  }
   DB.fasiLavoro = await sget(KEYS.fasiLavoro, null);
   const fasiLavoroLibVersion = await sget(KEYS.fasiLavoroLibVersion, 0);
   if(DB.fasiLavoro === null || fasiLavoroLibVersion < FASI_LAVORO_LIB_VERSION){
@@ -744,8 +1081,11 @@ async function boot(){
   DB.verbaliIndex = await sget(KEYS.index, []);
   MAINTENANCE_MODE = await sget(KEYS.maintenanceMode, false);
   NOTIFY_ON_MAINT_OFF = await sget(KEYS.notifyWhenReady, false);
+  DB.cestino = await sget(KEYS.cestino, []);
+  await purgaCestinoScaduto();
   render();
   initCloudSync();
+  initFirebaseSync();
 }
 
 async function loadVerbale(id){
@@ -759,46 +1099,182 @@ async function loadVerbale(id){
   v.provincia = v.provincia || '';
   v.tipologiaLavoro = v.tipologiaLavoro || '';
   v.provincia = provinciaSigla(v.provincia);
+  v.tipo = v.tipo || 'visita'; // verbali salvati prima del 23/09/2026 (verbale di riunione) sono tutti 'visita'
+  if(v.tipo==='riunione'){
+    v.impreseCoinvolte = v.impreseCoinvolte || [];
+    v.ordineGiorno = v.ordineGiorno || {variazioni:{checked:false,testo:''}, verificaDoc:{checked:false,affidataria:'',subappalto:'',autonomi:''}};
+    v.ordineGiorno.verificaDoc.affidatariaAltro = v.ordineGiorno.verificaDoc.affidatariaAltro || false;
+    v.ordineGiorno.verificaDoc.subappaltoAltro = v.ordineGiorno.verificaDoc.subappaltoAltro || false;
+    v.ordineGiorno.verificaDoc.autonomiAltro = v.ordineGiorno.verificaDoc.autonomiAltro || false;
+    // selezione dalla Libreria note riunioni (categoria "variazioniProgettuali"), richiesta 24/09/2026
+    // via commento sull'Artifact — verbali salvati prima non hanno ancora questo campo.
+    v.ordineGiorno.variazioni.selFrasi = v.ordineGiorno.variazioni.selFrasi || [];
+    v.verifiche = v.verifiche || {pos:{checked:false,testo:'',selFrasi:[]}, art102:{checked:false,testo:'',selFrasi:[]}, organizzazione:{checked:false,testo:'',selFrasi:[]}};
+    ['pos','art102','organizzazione'].forEach(k=>{ v.verifiche[k].selFrasi = v.verifiche[k].selFrasi || []; });
+    v.rls = v.rls || [];
+    // compat: verbali salvati prima della selezione impresa da tendina (24/09/2026) non hanno
+    // ancora `ruolo`/`impresaNome`/`impresaAltro` sulle righe RLS/RLST — dedotto dal testo del label.
+    v.rls.forEach(r=>{
+      if(r.ruolo===undefined){
+        r.ruolo = /impresa affidataria/i.test(r.label) ? 'Impresa affidataria'
+          : /impresa esecutrice/i.test(r.label) ? 'Impresa esecutrice' : null;
+      }
+      if(r.impresaNome===undefined) r.impresaNome='';
+      if(r.impresaAltro===undefined) r.impresaAltro=false;
+    });
+    v.rlsNote = v.rlsNote || '';
+    v.noteCSE = v.noteCSE || '';
+    v.noteCSESelFrasi = v.noteCSESelFrasi || [];
+    v.prossimaRiunione = v.prossimaRiunione || '';
+    v.oraRedazione = v.oraRedazione || ''; // dal 23/09/2026: ora (non piu' un valore libero "ore") — vedi totalHoursRiunione
+    if(v.firmaCSEImg===undefined) v.firmaCSEImg = null;
+  }
   (v.impreseCoinvolte||[]).forEach(i=>{ if(!i.ruoli || !i.ruoli.length) i.ruoli = i.ruolo ? [i.ruolo] : [IMPRESA_RUOLI[0]]; });
   v.firmaExtra = v.firmaExtra || {label:'Altra firma', nome:''};
   if(v.firmaExtra.img===undefined) v.firmaExtra.img = null;
   if(v.firmaCSEImg===undefined) v.firmaCSEImg = null;
   if(v.assistenteCSEImg===undefined) v.assistenteCSEImg = null;
   (v.impreseCoinvolte||[]).forEach(i=>{ if(i.preposto===undefined) i.preposto=''; if(i.firmaPrepostoImg===undefined) i.firmaPrepostoImg=null; if(i.prepostoAltro===undefined) i.prepostoAltro=false; });
+  (v.impreseCoinvolte||[]).forEach(i=>{ if(i.referenteNome===undefined) i.referenteNome=''; if(i.referenteMansione===undefined) i.referenteMansione=''; if(i.referenteNomeAltro===undefined) i.referenteNomeAltro=false; });
+  // presente a questa riunione — distinto dal ruolo (coinvolgimento nel cantiere): un'impresa già
+  // presente nei verbali (o aggiunta prima di questo aggiornamento) resta "presente" di default, per
+  // non perdere referenti già compilati (richiesta 24/09/2026, vedi wizImpreseRiunione).
+  (v.impreseCoinvolte||[]).forEach(i=>{ if(i.presente===undefined) i.presente=true; });
   return v;
 }
 async function saveVerbale(v){
   await sset('verbale:'+v.id, v);
   const idx = DB.verbaliIndex.findIndex(x=>x.id===v.id);
   const entry = {id:v.id, numero:v.numero, anno:v.anno, cantiereId:v.cantiereId, cantiereNome:v.cantiereNome,
-                 data:v.data, stato:v.stato||'bozza', createdAt:v.createdAt, cse:v.cse||''};
+                 data:v.data, stato:v.stato||'bozza', createdAt:v.createdAt, cse:v.cse||'', tipo:v.tipo||'visita'};
   if(idx>=0) DB.verbaliIndex[idx]=entry; else DB.verbaliIndex.unshift(entry);
   await sset(KEYS.index, DB.verbaliIndex);
   cloudSyncVerbaleIndice(entry, v);
 }
 async function deleteVerbale(id){
+  // prima di eliminarlo per davvero dall'indice/cloud, ne salvo una copia completa nel Cestino
+  // (richiesta 23/09/2026) cosi' resta ripristinabile per 10 giorni.
+  const v = await loadVerbale(id);
+  const entry = DB.verbaliIndex.find(x=>x.id===id);
+  if(v && entry){
+    await spostaInCestino('verbale', `Verbale n° ${entry.numero}/${entry.anno} — ${entry.cantiereNome||''}`,
+      `${entry.stato==='finale'?'finalizzato':'bozza'} · ${fmtDate(entry.data)}`, {verbale:v, indiceEntry:entry});
+  }
   await sdel('verbale:'+id);
   DB.verbaliIndex = DB.verbaliIndex.filter(x=>x.id!==id);
   await sset(KEYS.index, DB.verbaliIndex);
   cloudDeleteVerbaleIndice(id);
 }
 
-/* Conferma rinforzata per l'eliminazione di un verbale (irreversibile: foto e contenuto compilato
-   vanno persi): oltre al messaggio, chiede di ridigitare una parola chiave prima di procedere,
+/* Conferma rinforzata per l'eliminazione di un verbale (foto e contenuto compilato spariscono
+   dall'archivio): oltre al messaggio, chiede di ridigitare una parola chiave prima di procedere,
    invece del semplice OK/Annulla usato per le altre eliminazioni dell'app (richiesta 09/09/2026,
-   commento sull'Artifact). */
+   commento sull'Artifact). Da quando esiste il Cestino (23/09/2026) il verbale non va comunque
+   perso subito: resta ripristinabile per 10 giorni, vedi spostaInCestino/deleteVerbale sopra. */
 function confirmWithKeyword(message, keyword){
   const input = prompt(message + '\n\nPer confermare, scrivi "' + keyword + '" e premi OK:');
   return input !== null && input.trim().toUpperCase() === keyword.toUpperCase();
 }
 
+/* ======================= CESTINO (richiesta 23/09/2026: "cestino...dove ogni cosa eliminata rimane
+   qui per 10 giorni") =======================
+   Ogni eliminazione dell'app (cantieri, imprese — con il personale collegato, dipendenti, destinatari,
+   frasi della Libreria osservanze, voci/categorie della Libreria fasi di lavoro, verbali) passa da qui
+   invece di sparire subito per sempre: la cosa eliminata resta in DB.cestino, ripristinabile con un
+   tocco, e viene rimossa DEFINITIVAMENTE solo dopo CESTINO_GIORNI_RITENZIONE giorni (o prima, a mano,
+   dalla schermata Cestino). Il conto account CSE (data-del-account) NON passa dal Cestino: non è un
+   dato di cantiere ma un profilo locale di accesso all'app. */
+const CESTINO_GIORNI_RITENZIONE = 10;
+async function spostaInCestino(tipo, etichetta, dettaglio, dati){
+  DB.cestino = DB.cestino || [];
+  DB.cestino.unshift({id:uid(), tipo, etichetta, dettaglio: dettaglio||'', eliminatoIl: todayISO(), dati});
+  await sset(KEYS.cestino, DB.cestino);
+}
+// giorni pieni rimasti prima della rimozione definitiva automatica (0 = verrà rimosso al prossimo avvio/purga)
+function cestinoGiorniRimasti(eliminatoIl){
+  if(!eliminatoIl) return 0;
+  const elim = new Date(eliminatoIl+'T00:00:00');
+  const oggi = new Date(todayISO()+'T00:00:00');
+  const trascorsi = Math.round((oggi-elim)/(1000*60*60*24));
+  return Math.max(0, CESTINO_GIORNI_RITENZIONE - trascorsi);
+}
+async function purgaCestinoScaduto(){
+  if(!DB.cestino || !DB.cestino.length) return;
+  const primaCount = DB.cestino.length;
+  DB.cestino = DB.cestino.filter(e=>cestinoGiorniRimasti(e.eliminatoIl) > 0);
+  if(DB.cestino.length !== primaCount) await sset(KEYS.cestino, DB.cestino);
+}
+async function ripristinaDaCestino(cestinoId){
+  const idx = DB.cestino.findIndex(e=>e.id===cestinoId);
+  if(idx<0) return;
+  const entry = DB.cestino[idx];
+  switch(entry.tipo){
+    case 'cantiere':
+      DB.cantieri.push(entry.dati);
+      await sset(KEYS.cantieri, DB.cantieri);
+      break;
+    case 'impresa':
+      DB.imprese.push(entry.dati.impresa);
+      DB.personale.push(...(entry.dati.personale||[]));
+      await sset(KEYS.imprese, DB.imprese);
+      await sset(KEYS.personale, DB.personale);
+      break;
+    case 'personale':
+      DB.personale.push(entry.dati);
+      await sset(KEYS.personale, DB.personale);
+      if(!DB.imprese.some(i=>i.id===entry.dati.impresaId)){
+        toast('Dipendente ripristinato, ma l\'impresa collegata non esiste più');
+      }
+      break;
+    case 'destinatario':
+      DB.destinatari.push(entry.dati);
+      await sset(KEYS.destinatari, DB.destinatari);
+      break;
+    case 'frase':
+      DB.frasi.push(entry.dati);
+      await sset(KEYS.frasi, DB.frasi);
+      break;
+    case 'fraseRiunione':
+      DB.frasiRiunione.push(entry.dati);
+      await sset(KEYS.frasiRiunione, DB.frasiRiunione);
+      break;
+    case 'faseVoce': {
+      const cat = DB.fasiLavoro.find(c=>(c.categoria||'').trim().toLowerCase()===(entry.dati.categoriaNome||'').trim().toLowerCase());
+      if(cat) cat.voci.push(entry.dati.voce);
+      else DB.fasiLavoro.push({categoria: entry.dati.categoriaNome, voci:[entry.dati.voce]});
+      await sset(KEYS.fasiLavoro, DB.fasiLavoro);
+      break;
+    }
+    case 'faseCategoria': {
+      const esistente = DB.fasiLavoro.find(c=>(c.categoria||'').trim().toLowerCase()===(entry.dati.categoria||'').trim().toLowerCase());
+      if(esistente) esistente.voci.push(...(entry.dati.voci||[]));
+      else DB.fasiLavoro.push(entry.dati);
+      await sset(KEYS.fasiLavoro, DB.fasiLavoro);
+      break;
+    }
+    case 'verbale':
+      await sset('verbale:'+entry.dati.verbale.id, entry.dati.verbale);
+      DB.verbaliIndex.unshift(entry.dati.indiceEntry);
+      await sset(KEYS.index, DB.verbaliIndex);
+      cloudSyncVerbaleIndice(entry.dati.indiceEntry, entry.dati.verbale);
+      break;
+  }
+  DB.cestino.splice(idx,1);
+  await sset(KEYS.cestino, DB.cestino);
+  toast('Ripristinato');
+  render();
+}
+async function eliminaDefinitivamenteDaCestino(cestinoId){
+  DB.cestino = DB.cestino.filter(e=>e.id!==cestinoId);
+  await sset(KEYS.cestino, DB.cestino);
+  render();
+}
+
 /* ======================= SINCRONIZZAZIONE CLOUD DELL'INDICE VERBALI (tra dispositivi) =======================
    Sincronizza in tempo reale solo un riepilogo di ogni verbale (cantiere, data, numero, compilatore),
    MAI foto/checklist/firme: quelle restano solo sul dispositivo che ha creato il verbale (in Archivio,
-   i verbali altrui compaiono "di sola consultazione"). Backend: Firestore (progetto Firebase
-   "bozza-verbali-gdg", accesso libero senza login — vedi firestore.rules), attivo su qualunque
-   dispositivo/browser che apra l'app pubblicata; nel file HTML scaricato a mano resta no-op se gli
-   script Firebase non sono raggiungibili (nessuna connessione) e l'app funziona comunque solo in locale. */
+   i verbali altrui compaiono "di sola consultazione"). Attivo solo nella app pubblicata (capacità "db"
+   della piattaforma Claude); nel file HTML scaricabile resta no-op e l'app funziona solo in locale. */
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyDwrYLw4zesHsbzpZjJNfxsOFyRHmylc5c",
   authDomain: "bozza-verbali-gdg.firebaseapp.com",
@@ -812,8 +1288,9 @@ let CLOUD_VERBALI = [];
 async function initCloudSync(){
   try{
     if(typeof firebase==='undefined') return; // script Firebase non caricato (es. offline)
-    firebase.initializeApp(FIREBASE_CONFIG);
+    if(!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
     CLOUD_DB = firebase.firestore();
+    if(!CLOUD_DB) return; // capacità non disponibile in questa vista
     CLOUD_DB.collection('verbali').orderBy('createdAt','desc').limit(500).onSnapshot(
       snap => { CLOUD_VERBALI = snap.docs.map(d=>({id:d.id, ...d.data()})); if(ROUTE.name==='archivio') render(); },
       err => { console.error('sincronizzazione archivio verbali non riuscita', err); }
@@ -877,7 +1354,7 @@ async function cloudSyncVerbaleIndice(entry, v){
       cantiereId: entry.cantiereId, cantiereNome: entry.cantiereNome,
       comune: v.comune||'', provincia: v.provincia||'', sito: v.sito||'', tipologiaLavoro: v.tipologiaLavoro||'',
       data: entry.data, stato: entry.stato, createdAt: entry.createdAt,
-      cse: v.cse||'', aggiornatoIl: new Date().toISOString(),
+      cse: v.cse||'', tipo: v.tipo||'visita', aggiornatoIl: new Date().toISOString(),
     });
   }catch(e){ console.error('sincronizzazione cloud del verbale non riuscita (il verbale resta comunque salvato in locale)', e); }
 }
@@ -885,16 +1362,136 @@ async function cloudDeleteVerbaleIndice(id){
   try{ if(CLOUD_DB) await CLOUD_DB.collection('verbali').doc(id).delete(); }catch(e){ console.error(e); }
 }
 
-function nextNumero(cantiereId){
+/* ======================= ACCOUNT ONLINE (Firebase — sincronizzazione multi-dispositivo) =======================
+   Quando un CSE effettua l'accesso con un account personale (email + password), le 8 voci elencate
+   in FIRESTORE_SYNC_KEYS vengono tenute allineate in tempo reale su tutti i dispositivi collegati a
+   quello stesso account, tramite un documento Firestore per ciascuna voce (/users/{uid}/sync/{voce}).
+   Fase attuale: NON sincronizza ancora foto/firme né il contenuto completo dei singoli verbali (solo
+   il loro indice riassuntivo) — resterebbero da progettare in una sottocollezione dedicata per
+   rispettare il limite di circa 1 MB per documento di Firestore (piano gratuito, senza Firebase
+   Storage). Se l'account online non viene mai collegato, o se questo script non riesce a caricarsi,
+   l'app continua a funzionare esattamente come prima, solo in locale su questo dispositivo. */
+function applyLoadedCollection(key, val){
+  switch(key){
+    case KEYS.cantieri: DB.cantieri = val; break;
+    case KEYS.imprese: DB.imprese = val; break;
+    case KEYS.personale: DB.personale = val; break;
+    case KEYS.frasi: DB.frasi = val; break;
+    case KEYS.frasiRiunione: DB.frasiRiunione = val; break;
+    case KEYS.destinatari: DB.destinatari = val; break;
+    case KEYS.fasiLavoro: DB.fasiLavoro = val; break;
+    case KEYS.index: DB.verbaliIndex = val; break;
+  }
+}
+function getLocalCollection(key){
+  switch(key){
+    case KEYS.cantieri: return DB.cantieri;
+    case KEYS.imprese: return DB.imprese;
+    case KEYS.personale: return DB.personale;
+    case KEYS.frasi: return DB.frasi;
+    case KEYS.frasiRiunione: return DB.frasiRiunione;
+    case KEYS.destinatari: return DB.destinatari;
+    case KEYS.fasiLavoro: return DB.fasiLavoro;
+    case KEYS.index: return DB.verbaliIndex;
+    default: return [];
+  }
+}
+/* Unione semplice per id: aggiunge gli elementi presenti solo nell'altro elenco, senza mai rimuovere
+   nulla; se lo stesso id esiste in entrambi resta la versione già presente su questo dispositivo. */
+function mergeByField(localArr, remoteArr, keyFn){
+  localArr = Array.isArray(localArr) ? localArr : [];
+  remoteArr = Array.isArray(remoteArr) ? remoteArr : [];
+  const seen = new Set(localArr.map(keyFn));
+  const merged = localArr.slice();
+  remoteArr.forEach(item=>{
+    const k = keyFn(item);
+    if(!seen.has(k)){ merged.push(item); seen.add(k); }
+  });
+  return merged;
+}
+/* Le categorie di fasiLavoro non hanno un id proprio: si abbinano per nome (come nell'importazione
+   dati da file), e le voci di ciascuna categoria si uniscono senza duplicati. */
+function mergeFasiLavoro(localArr, remoteArr){
+  localArr = Array.isArray(localArr) ? localArr : [];
+  remoteArr = Array.isArray(remoteArr) ? remoteArr : [];
+  const merged = localArr.map(c=>({categoria:c.categoria, voci:(c.voci||[]).slice()}));
+  remoteArr.forEach(cat=>{
+    const nomeCat = (cat.categoria||'').trim();
+    let localCat = merged.find(x=>(x.categoria||'').trim().toLowerCase()===nomeCat.toLowerCase());
+    if(!localCat){ localCat = {categoria:nomeCat, voci:[]}; merged.push(localCat); }
+    (cat.voci||[]).forEach(v=>{
+      const vv = (v||'').trim(); if(!vv) return;
+      if(!localCat.voci.some(x=>(x||'').trim().toLowerCase()===vv.toLowerCase())) localCat.voci.push(vv);
+    });
+  });
+  return merged;
+}
+/* Eseguita una sola volta subito dopo l'accesso: se è la primissima volta che questo account online
+   viene usato, il cloud riparte semplicemente dai dati già presenti su questo dispositivo. Se invece
+   l'account ha già dei dati sincronizzati da un altro dispositivo, i due elenchi vengono uniti (mai
+   sovrascritti l'uno con l'altro), e il risultato dell'unione viene salvato sia in locale sia sul
+   cloud, così che ogni dispositivo riparta allineato allo stesso stato. */
+async function mergeCloudOnLogin(user){
+  for(const key of FIRESTORE_SYNC_KEYS){
+    let remoteVal;
+    try{ remoteVal = await window.FB.getDoc(user.uid, key); }
+    catch(e){ console.error('lettura cloud non riuscita per', key, e); continue; }
+    const localVal = getLocalCollection(key);
+    let mergedVal;
+    if(remoteVal===null || remoteVal===undefined){
+      mergedVal = localVal;
+    } else if(key===KEYS.fasiLavoro){
+      mergedVal = mergeFasiLavoro(localVal, remoteVal);
+    } else {
+      mergedVal = mergeByField(localVal, remoteVal, item=>(item && item.id!=null) ? item.id : JSON.stringify(item));
+    }
+    _fbApplyingRemote = true;
+    try{ await sset(key, mergedVal); } finally { _fbApplyingRemote = false; }
+    applyLoadedCollection(key, mergedVal);
+    try{ await window.FB.setDoc(user.uid, key, mergedVal); }
+    catch(e){ console.error('scrittura cloud non riuscita per', key, e); }
+  }
+}
+let _fbSyncStarted = false;
+function initFirebaseSync(){
+  if(_fbSyncStarted) return;
+  _fbSyncStarted = true;
+  if(!window.FB){ window.addEventListener('fb-ready', initFirebaseSync, {once:true}); return; }
+  window.FB.onAuthChange(async (user)=>{
+    _fbUnsubscribers.forEach(fn=>{ try{ fn(); }catch(e){} });
+    _fbUnsubscribers = [];
+    CLOUD_USER = user || null;
+    if(!user){ render(); return; }
+    try{ await mergeCloudOnLogin(user); }
+    catch(e){ console.error('unione dei dati con l\'account online non riuscita', e); }
+    FIRESTORE_SYNC_KEYS.forEach(key=>{
+      const unsub = window.FB.watchDoc(user.uid, key, async (remoteVal)=>{
+        if(remoteVal===undefined || remoteVal===null) return;
+        _fbApplyingRemote = true;
+        try{ await sset(key, remoteVal); applyLoadedCollection(key, remoteVal); render(); }
+        finally { _fbApplyingRemote = false; }
+      });
+      _fbUnsubscribers.push(unsub);
+    });
+    render();
+  });
+}
+
+/* Numerazione progressiva per cantiere/anno — richiesta 23/09/2026: il verbale di riunione iniziale
+   di coordinamento (Allegato 8) usa una serie di numerazione propria, separata da quella dei verbali
+   di visita (Allegato 10), come nel modello di riferimento ("n° __/20__" della riunione). I verbali
+   salvati prima di questa modifica non hanno un campo "tipo": vengono trattati come 'visita'. */
+function nextNumero(cantiereId, tipo){
+  tipo = tipo || 'visita';
   const year = new Date().getFullYear();
-  const count = DB.verbaliIndex.filter(v=>v.cantiereId===cantiereId && v.anno===year).length;
+  const count = DB.verbaliIndex.filter(v=>v.cantiereId===cantiereId && v.anno===year && (v.tipo||'visita')===tipo).length;
   return {numero:count+1, anno:year};
 }
 
 function blankVerbale(cantiere){
-  const n = nextNumero(cantiere.id);
+  const n = nextNumero(cantiere.id, 'visita');
   return {
-    id: uid(), stato:'bozza',
+    id: uid(), stato:'bozza', tipo:'visita',
     cantiereId: cantiere.id, cantiereNome: cantiere.nome, sito: cantiere.sito||'',
     comune: cantiere.comune||'', provincia: provinciaSigla(cantiere.provincia),
     tipologiaLavoro: cantiere.tipologiaLavoro || '',
@@ -913,6 +1510,56 @@ function blankVerbale(cantiere){
     sospensione: {attiva:false, contro:[], descrizione:'', propostaDa:'', propostaTesto:'', esito:'',
                   prescrizioniTesto:'', motivoRespinta:'', entroData:'', fotoFase:[], verificaAvvenuta:false, fotoRipristino:[]},
     firmaExtra: {label:'Altra firma', nome:'', img:null},
+    destinatariSelezionati: [], modalitaInvio:{email:true, fax:false, brevimano:false},
+    rimaneCantiere:true,
+    createdAt: Date.now()
+  };
+}
+
+/* Verbale di riunione iniziale di coordinamento (Allegato 8) — richiesta 23/09/2026: "bisogna
+   aggiungere un secondo tasto per fare i verbali di inizio riunione". Riusa gli stessi campi generici
+   del verbale di visita (impreseCoinvolte, presentiPersonale, altriPresenti, destinatariSelezionati,
+   modalitaInvio, rimaneCantiere, ecc.) cosi' i passaggi "Presenti" e "Destinatari" del wizard, la
+   copertina e l'invio restano identici; aggiunge solo i campi specifici del modello di riunione
+   (luogo/orari, referenti d'impresa, ordine del giorno, verifiche del CSE, elenco RLS/RLST, note). */
+function blankVerbaleRiunione(cantiere){
+  const n = nextNumero(cantiere.id, 'riunione');
+  return {
+    id: uid(), stato:'bozza', tipo:'riunione',
+    cantiereId: cantiere.id, cantiereNome: cantiere.nome, sito: cantiere.sito||'',
+    comune: cantiere.comune||'', provincia: provinciaSigla(cantiere.provincia),
+    tipologiaLavoro: cantiere.tipologiaLavoro || '',
+    committente: cantiere.committente||'', responsabileLavori: cantiere.responsabileLavori||'',
+    numero: n.numero, anno: n.anno,
+    data: todayISO(),
+    luogoRiunione: 'cantiere', // 'cantiere' | 'altro'
+    luogoAltro: '',
+    oraInizio:'', oraFine:'', dataRedazione: todayISO(), oraRedazione:'',
+    cse: DB.settings.cseDefault||'',
+    firmaCSEImg: null,
+    impreseCoinvolte: [], // {impresaId, nome, ruoli, preposto, referenteNome, referenteMansione}
+    presentiPersonale: [], altriPresenti: [],
+    ordineGiorno: {
+      variazioni: {checked:false, testo:'', selFrasi:[]},
+      verificaDoc: {checked:false, affidataria:'', subappalto:'', autonomi:'',
+                    affidatariaAltro:false, subappaltoAltro:false, autonomiAltro:false}
+    },
+    verifiche: {
+      pos: {checked:false, testo:'', selFrasi:[]},
+      art102: {checked:false, testo:'', selFrasi:[]},
+      organizzazione: {checked:false, testo:'', selFrasi:[]}
+    },
+    rls: [
+      {label:'RLS azienda del committente/datore di lavoro', checked:false, nome:'', ruolo:null, impresaNome:'', impresaAltro:false},
+      {label:'RLST azienda del committente/datore di lavoro', checked:false, nome:'', ruolo:null, impresaNome:'', impresaAltro:false},
+      {label:'RLS impresa affidataria', checked:false, nome:'', ruolo:'Impresa affidataria', impresaNome:'', impresaAltro:false},
+      {label:'RLST impresa affidataria', checked:false, nome:'', ruolo:'Impresa affidataria', impresaNome:'', impresaAltro:false},
+      {label:'RLS impresa esecutrice', checked:false, nome:'', ruolo:'Impresa esecutrice', impresaNome:'', impresaAltro:false},
+      {label:'RLST impresa esecutrice', checked:false, nome:'', ruolo:'Impresa esecutrice', impresaNome:'', impresaAltro:false}
+    ],
+    rlsAssenti:false, rlsNote:'',
+    prossimaRiunione: 'da definirsi in funzione delle reali necessità',
+    noteCSE:'', noteCSESelFrasi: [],
     destinatariSelezionati: [], modalitaInvio:{email:true, fax:false, brevimano:false},
     rimaneCantiere:true,
     createdAt: Date.now()
@@ -940,6 +1587,8 @@ function render(){
     case 'admin': html = ADMIN_UNLOCKED ? viewAdmin() : viewAdminLogin(); break;
     case 'home': html=viewHome(); break;
     case 'cantieri': html=viewCantieri(); break;
+    case 'cantieriCompletati': html=viewCantieriCompletati(); break;
+    case 'cestino': html=viewCestino(); break;
     case 'cantiere-edit': html=viewCantiereEdit(ROUTE.id); break;
     case 'imprese': html=viewImprese(); break;
     case 'impresa-edit': html=viewImpresaEdit(ROUTE.id); break;
@@ -947,6 +1596,7 @@ function render(){
     case 'personale-edit': html=viewPersonaleEdit(ROUTE.id); break;
     case 'personale-import': html=viewPersonaleImport(ROUTE.impresaId); break;
     case 'frasi': html=viewFrasi(); break;
+    case 'frasi-riunione': html=viewFrasiRiunione(); break;
     case 'fasiLibreria': html=viewFasiLibreria(); break;
     case 'profilo': html=viewProfilo(); break;
     case 'destinatari': html=viewDestinatari(); break;
@@ -954,7 +1604,7 @@ function render(){
     case 'trasferimento-dati': html=viewTrasferimentoDati(); break;
     case 'archivio': html=viewArchivio(); break;
     case 'wizard': html=viewWizard(ROUTE.step); break;
-    case 'anteprima': html=viewAnteprima(); break;
+    case 'anteprima': html = (CURRENT_VERBALE && CURRENT_VERBALE.tipo==='riunione') ? viewAnteprimaRiunione() : viewAnteprima(); break;
     case 'documento': html=viewDocumento(); break;
     default: html=viewHome();
   }
@@ -1018,10 +1668,45 @@ function viewAccesso(){
       <input type="text" id="f-cse-default" value="${esc(cse)}" placeholder="Es. Geom. Davide Gioiosano">
       <div class="hint" style="margin-top:6px;">Verrà usato come coordinatore per l'esecuzione dei lavori (CSE) in ogni nuovo verbale — modificabile in qualsiasi momento dal profilo (icona in alto a destra).</div>
     </section>
-    <div class="btn-row">
+    <div class="btn-row" style="margin-bottom:22px;">
       <button class="btn" data-save-profilo="1">Entra nell'app →</button>
     </div>
+    ${viewAccountOnlineBox()}
   </div>`;
+}
+
+/* ======================= ACCOUNT ONLINE (riquadro login/registrazione — Firebase) =======================
+   Riquadro riutilizzato sia nella schermata di benvenuto (viewAccesso) sia nel Profilo CSE
+   (viewProfilo): mostra il modulo di accesso/registrazione se nessun account online è collegato a
+   questo dispositivo, oppure lo stato "connesso come..." con il pulsante per disconnettersi. */
+function viewAccountOnlineBox(){
+  if(CLOUD_USER){
+    return `
+    <section class="block">
+      <h3>☁️ Account online</h3>
+      <p class="hint" style="margin-top:0;">Connesso come <b>${esc(CLOUD_USER.email||'')}</b>. Cantieri, imprese, personale, destinatari e librerie di frasi restano sincronizzati automaticamente su tutti i dispositivi collegati a questo account. Foto e firme, per ora, restano solo su ciascun dispositivo.</p>
+      <div class="btn-row">
+        <button class="btn secondary" data-fb-logout="1">Disconnetti account online</button>
+      </div>
+    </section>`;
+  }
+  const mode = FB_UI_MODE==='signup' ? 'signup' : 'login';
+  return `
+  <section class="block">
+    <h3>☁️ Account online (facoltativo)</h3>
+    <p class="hint" style="margin-top:0;">Crea un account personale, oppure accedi a quello che hai già, per tenere sincronizzati cantieri, imprese, personale, destinatari e librerie di frasi su più dispositivi (es. telefono e computer). Ogni account vede solo i propri dati.</p>
+    <label>Email</label>
+    <input type="email" id="f-fb-email" placeholder="nome@studio.it" autocomplete="username">
+    <label style="margin-top:8px;">Password</label>
+    <input type="password" id="f-fb-pwd" placeholder="${mode==='signup'?'Almeno 6 caratteri':'Password'}" autocomplete="${mode==='signup'?'new-password':'current-password'}">
+    <div class="hint" id="fb-auth-err" style="color:var(--red);min-height:16px;"></div>
+    <div class="btn-row">
+      <button class="btn" data-fb-submit="${mode}">${mode==='signup' ? 'Crea account' : 'Accedi'}</button>
+    </div>
+    <p class="hint" style="text-align:center;">${mode==='signup'
+      ? 'Hai già un account online? <a href="#" data-fb-toggle="login">Accedi</a>'
+      : 'Non hai ancora un account online? <a href="#" data-fb-toggle="signup">Creane uno</a>'}</p>
+  </section>`;
 }
 
 /* ======================= HOME ======================= */
@@ -1036,11 +1721,14 @@ function viewHome(){
       <button class="menu-btn primary" data-go="new-verbale">
         <div class="ico">＋</div><div class="lbl">Nuovo verbale</div><div class="cnt">Nuova visita di cantiere</div>
       </button>
+      <button class="menu-btn primary" data-go="new-verbale-riunione">
+        <div class="ico">＋</div><div class="lbl">Verbale riunione iniziale</div><div class="cnt">Riunione iniziale di coordinamento</div>
+      </button>
       <button class="menu-btn" data-go="archivio">
         <div class="ico">📂</div><div class="lbl">Archivio verbali</div><div class="cnt">${DB.verbaliIndex.length} verbali salvati</div>
       </button>
       <button class="menu-btn" data-go="cantieri">
-        <div class="ico">🏗️</div><div class="lbl">Cantieri</div><div class="cnt">${DB.cantieri.length} archiviati</div>
+        <div class="ico">🏗️</div><div class="lbl">Cantieri</div><div class="cnt">${DB.cantieri.filter(c=>!c.completato).length} attivi${DB.cantieri.some(c=>c.completato)?` · ${DB.cantieri.filter(c=>c.completato).length} completati`:''}</div>
       </button>
       <button class="menu-btn" data-go="imprese">
         <div class="ico">🏢</div><div class="lbl">Imprese</div><div class="cnt">${DB.imprese.length} archiviate</div>
@@ -1057,6 +1745,12 @@ function viewHome(){
       <button class="menu-btn" data-go="destinatari">
         <div class="ico">✉️</div><div class="lbl">Destinatari</div><div class="cnt">${DB.destinatari.length} contatti</div>
       </button>
+      <button class="menu-btn" data-go="frasi-riunione">
+        <div class="ico">📋</div><div class="lbl">Libreria note riunioni</div><div class="cnt">${(DB.frasiRiunione||[]).length} frasi</div>
+      </button>
+      <button class="menu-btn wide" data-go="cestino">
+        <div class="ico">🗑️</div><div class="lbl">Cestino</div><div class="cnt">${(DB.cestino||[]).length} elementi</div>
+      </button>
       <button class="menu-btn wide" data-go="trasferimento-dati">
         <div class="ico">🔄</div><div class="lbl">Esporta / Importa dati</div><div class="cnt">Backup completo (verbali inclusi) su un altro dispositivo o su Files/iCloud</div>
       </button>
@@ -1065,24 +1759,55 @@ function viewHome(){
 }
 
 /* ======================= CANTIERI ======================= */
+/* Un cantiere può essere segnato come "completato" (richiesta 23/09/2026: poter archiviare in un
+   archivio dedicato i cantieri completati): resta nei dati (verbali già fatti, esportazioni, filtri
+   dell'archivio verbali continuano a funzionare) ma esce dall'elenco "Cantieri" attivo e dal menù di
+   scelta cantiere quando crei un nuovo verbale, per non ingombrare/rischiare scelte sbagliate su un
+   cantiere ormai chiuso. Riattivabile in qualsiasi momento dalla schermata "Cantieri completati". */
 function viewCantieri(){
-  const items = DB.cantieri.map(c=>`
+  const attivi = DB.cantieri.filter(c=>!c.completato);
+  const completatiCount = DB.cantieri.length - attivi.length;
+  const items = attivi.map(c=>`
     <div class="item-row">
       <div class="main"><div class="t">${esc(c.nome)}</div><div class="s">${esc(c.sito||'')}</div></div>
       <div class="actions">
         <button class="iconbtn" data-edit-cantiere="${c.id}">Modifica</button>
+        <button class="iconbtn" data-complete-cantiere="${c.id}" title="Segna come completato">✅</button>
         <button class="iconbtn" data-del-cantiere="${c.id}">🗑</button>
       </div>
-    </div>`).join('') || emptyState('🏗️','Nessun cantiere archiviato','Aggiungi il primo cantiere per iniziare a creare verbali.');
+    </div>`).join('') || emptyState('🏗️','Nessun cantiere attivo','Aggiungi il primo cantiere per iniziare a creare verbali.');
   return topWrap('Cantieri','', `
     <section class="block">${items}</section>
+    <button class="btn ghost" style="margin-bottom:12px;" data-go="cantieriCompletati">📦 Cantieri completati (${completatiCount})</button>
     <div class="fab"><button class="btn" data-go="cantiere-edit-new">＋ Nuovo cantiere</button></div>
   `);
 }
+/* Elenco dei cantieri completati — schermata dedicata (non nel menu principale, si apre dal pulsante
+   "Cantieri completati" sopra). Torna a "Cantieri" (non alla Home) toccando "‹", perché è un
+   sotto-elenco di quella schermata. */
+function viewCantieriCompletati(){
+  const completati = DB.cantieri.filter(c=>c.completato)
+    .sort((a,b)=> (b.completatoIl||'').localeCompare(a.completatoIl||''));
+  const items = completati.map(c=>`
+    <div class="item-row">
+      <div class="main"><div class="t">${esc(c.nome)}</div><div class="s">${esc(c.sito||'')}${c.completatoIl?` · completato il ${fmtDate(c.completatoIl)}`:''}</div></div>
+      <div class="actions">
+        <button class="iconbtn" data-edit-cantiere="${c.id}">Modifica</button>
+        <button class="iconbtn" data-reactivate-cantiere="${c.id}" title="Riattiva cantiere">↩️</button>
+        <button class="iconbtn" data-del-cantiere="${c.id}">🗑</button>
+      </div>
+    </div>`).join('') || emptyState('📦','Nessun cantiere completato','I cantieri che segni come completati dall\'elenco "Cantieri" compariranno qui.');
+  return `
+  <div class="topbar"><button class="back" data-go="cantieri">‹</button><h1>Cantieri completati<span class="sub">Non selezionabili per nuovi verbali — riattivabili in qualsiasi momento</span></h1></div>
+  <div class="content">
+    <section class="block">${items}</section>
+  </div>`;
+}
 function viewCantiereEdit(id){
-  const c = id? DB.cantieri.find(x=>x.id===id) : {id:uid(), nome:'',sito:'',committente:'',responsabileLavori:'',comune:'',provincia:'',tipologiaLavoro:''};
+  const c = id? DB.cantieri.find(x=>x.id===id) : {id:uid(), nome:'',sito:'',committente:'',responsabileLavori:'',comune:'',provincia:'',tipologiaLavoro:'',completato:false,completatoIl:null};
   const isNew = !id;
   return topWrap(isNew?'Nuovo cantiere':'Modifica cantiere','', `
+    ${c.completato?`<div class="hint" style="margin-bottom:10px;">✅ Cantiere completato${c.completatoIl?` il ${fmtDate(c.completatoIl)}`:''} — non compare tra i cantieri selezionabili per un nuovo verbale.</div>`:''}
     <section class="block">
       <label>Nome cantiere *</label>
       <input type="text" id="f-nome" value="${esc(c.nome)}" placeholder="Es. Saint Marcel (AO)">
@@ -1105,25 +1830,98 @@ function viewCantiereEdit(id){
       <button class="btn secondary" data-go="cantieri">Annulla</button>
       <button class="btn" data-save-cantiere="${c.id}" data-new="${isNew}">Salva</button>
     </div>
+    ${isNew?'':`<div class="btn-row">
+      <button class="btn ghost" data-toggle-completato-cantiere="${c.id}">${c.completato?'↩️ Riattiva cantiere':'✅ Segna come completato'}</button>
+    </div>`}
   `);
 }
 
 /* ======================= IMPRESE ======================= */
+/* Ricerca + ordinamento + menù a tendina per iniziale (richiesta 23/09/2026: "metti una barra di
+   ricerca e un filtro per ordine alfabetico, poi crea un menù a tendina per ogni lettera che
+   contenga tutte le imprese che iniziano con quella lettera"). Stesso stile a riquadro dei gruppi
+   già usati per Personale (classe .pers-group), chiusi di default; l'ordinamento (A-Z/Z-A) rifà il
+   render (come già per "Ordina per" in Destinatari), la ricerca filtra dal vivo per non perdere
+   il focus mentre si digita (come Personale/Destinatari). */
 function viewImprese(){
-  const items = DB.imprese.map(i=>{
-    const n = DB.personale.filter(p=>p.impresaId===i.id).length;
+  if(DB.imprese.length===0){
+    return topWrap('Imprese','', `<section class="block">${emptyState('🏢','Nessuna impresa archiviata','Aggiungi le imprese che partecipano ai cantieri.')}</section>
+      <div class="fab"><button class="btn" data-go="impresa-edit-new">＋ Nuova impresa</button></div>`);
+  }
+  ROUTE.filtriImprese = ROUTE.filtriImprese || {search:'', ordine:'nome-asc'};
+  const ordine = ROUTE.filtriImprese.ordine || 'nome-asc';
+  const desc = ordine==='nome-desc';
+  const search = ROUTE.filtriImprese.search || '';
+  const ordineOptions = [
+    {v:'nome-asc', l:'Nome (A-Z)'}, {v:'nome-desc', l:'Nome (Z-A)'}
+  ].map(o=>`<option value="${o.v}" ${ordine===o.v?'selected':''}>${o.l}</option>`).join('');
+
+  const gruppi = new Map();
+  DB.imprese.forEach(i=>{
+    const primaLettera = (i.nome||'').trim().charAt(0).toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g,'');
+    const key = /[A-Z]/.test(primaLettera) ? primaLettera : '#';
+    if(!gruppi.has(key)) gruppi.set(key, []);
+    gruppi.get(key).push(i);
+  });
+  const lettere = [...gruppi.keys()].sort((a,b)=> (desc?-1:1) * a.localeCompare(b,'it'));
+
+  const groupsHtml = lettere.map(lettera=>{
+    const imprese = gruppi.get(lettera).slice()
+      .sort((a,b)=> (desc?-1:1) * (a.nome||'').localeCompare((b.nome||''), 'it'));
+    const rows = imprese.map(i=>{
+      const n = DB.personale.filter(p=>p.impresaId===i.id).length;
+      const searchBlob = `${i.nome} ${i.referente||''} ${i.email||''}`.toLowerCase();
+      return `
+      <div class="item-row" data-impresa-search="${esc(searchBlob)}">
+        <div class="main"><div class="t">${esc(i.nome)}</div><div class="s">${esc(i.referente||'')} ${i.email?'· '+esc(i.email):''} · ${n} dipendenti</div></div>
+        <div class="actions">
+          <button class="iconbtn" data-edit-impresa="${i.id}">Modifica</button>
+          <button class="iconbtn" data-del-impresa="${i.id}">🗑</button>
+        </div>
+      </div>`;
+    }).join('');
     return `
-    <div class="item-row">
-      <div class="main"><div class="t">${esc(i.nome)}</div><div class="s">${esc(i.referente||'')} ${i.email?'· '+esc(i.email):''} · ${n} dipendenti</div></div>
-      <div class="actions">
-        <button class="iconbtn" data-edit-impresa="${i.id}">Modifica</button>
-        <button class="iconbtn" data-del-impresa="${i.id}">🗑</button>
+    <details class="pers-group" data-lettera="${esc(lettera)}" ${IMPRESE_LETTERA_OPEN[lettera]?'open':''}>
+      <summary>
+        <span class="name">${lettera==='#'?'Altro':lettera}<span class="cnt">(${imprese.length})</span></span>
+        <span class="arrow">▶</span>
+      </summary>
+      <div class="pers-body">
+        ${rows}
+        <div class="hint imprese-filtered-hint" style="display:none;">Nessuna impresa corrisponde alla ricerca.</div>
       </div>
-    </div>`;}).join('') || emptyState('🏢','Nessuna impresa archiviata','Aggiungi le imprese che partecipano ai cantieri.');
+    </details>`;
+  }).join('');
+
   return topWrap('Imprese','', `
-    <section class="block">${items}</section>
+    <section class="block">
+      <label>Cerca</label>
+      <input type="text" id="imprese-search" placeholder="Cerca per nome, referente o email…" value="${esc(search)}">
+      <label>Ordina per</label>
+      <select id="imprese-filter-ordine">${ordineOptions}</select>
+    </section>
+    ${groupsHtml}
     <div class="fab"><button class="btn" data-go="impresa-edit-new">＋ Nuova impresa</button></div>
   `);
+}
+/* Filtra dal vivo (senza re-render, per non perdere il focus della ricerca) le righe già presenti
+   nella sezione Imprese, in base a ROUTE.filtriImprese.search — stesso meccanismo di
+   applyPersonaleFiltri/applyDestinatariFiltroRicerca. Apre in automatico i gruppi (lettere) con
+   corrispondenze e chiude quelli senza. */
+function applyImpreseFiltro(){
+  const q = (ROUTE.filtriImprese && ROUTE.filtriImprese.search || '').trim().toLowerCase();
+  document.querySelectorAll('#app .pers-group[data-lettera]').forEach(group=>{
+    const rows = [...group.querySelectorAll('.item-row[data-impresa-search]')];
+    let anyVisible = rows.length===0;
+    rows.forEach(row=>{
+      const visible = !q || row.dataset.impresaSearch.includes(q);
+      row.style.display = visible ? '' : 'none';
+      if(visible) anyVisible = true;
+    });
+    const hint = group.querySelector('.imprese-filtered-hint');
+    if(hint) hint.style.display = (rows.length>0 && !anyVisible) ? '' : 'none';
+    if(q) group.open = anyVisible;
+  });
 }
 function viewImpresaEdit(id){
   const i = id? DB.imprese.find(x=>x.id===id) : {id:uid(), nome:'',referente:'',telefono:'',email:'',tipologia:'',note:''};
@@ -1372,6 +2170,35 @@ function viewFrasi(){
   `);
 }
 
+/* ======================= LIBRERIA NOTE RIUNIONI (Allegato 8) =======================
+   Frasi predefinite selezionabili nelle "Note del CSE" (e nelle "Verifiche del CSE") del verbale di
+   riunione iniziale, in aggiunta al testo libero. Suddivisa in 6 categorie fisse (richiesta
+   24/09/2026 via commento sull'Artifact), gestita da questa schermata dedicata come CAT_LABELS/
+   CAT_ORDER per la "Libreria osservanze" — vedi CAT_LABELS_RIUNIONE/CAT_ORDER_RIUNIONE; le frasi
+   della "Libreria osservanze" (verbale di visita) restano in un elenco separato, DB.frasi. */
+function viewFrasiRiunione(){
+  let blocks = CAT_ORDER_RIUNIONE.map((cat,idx)=>{
+    const items = DB.frasiRiunione.filter(f=>f.categoria===cat);
+    const rows = items.map(f=>`
+      <div class="phrase-item">
+        <div class="txt">${esc(f.testo)}</div>
+        <button class="del" data-del-frase-riunione="${f.id}">✕</button>
+      </div>`).join('') || `<div class="hint">Nessuna frase in questa categoria.</div>`;
+    return `
+      <details class="phrase-cat ${cat} riu-c${(idx%4)+1}" ${PHRASE_CAT_OPEN[cat]?'open':''}>
+        <summary class="cat-title">${CAT_LABELS_RIUNIONE[cat]}</summary>
+        ${rows}
+        <div style="margin-top:8px;">
+          <textarea id="new-frase-riunione-${cat}" placeholder="Aggiungi una nuova frase…" style="min-height:44px;"></textarea>
+          <button class="btn small secondary" style="margin-top:6px;" data-add-frase-riunione="${cat}">＋ Aggiungi a questa categoria</button>
+        </div>
+      </details>`;
+  }).join('');
+  return topWrap('Libreria note riunioni','Le frasi selezionabili nelle Note del CSE del verbale di riunione iniziale', `
+    <section class="block">${blocks}</section>
+  `);
+}
+
 /* ======================= LIBRERIA FASI DI LAVORO ======================= */
 function viewFasiLibreria(){
   let blocks = DB.fasiLavoro.map((c,ci)=>{
@@ -1380,17 +2207,20 @@ function viewFasiLibreria(){
         <div class="txt">${esc(voce)}</div>
         <button class="del" data-del-fase-voce="${ci}" data-voce-idx="${vi}">✕</button>
       </div>`).join('') || `<div class="hint">Nessuna voce in questa categoria.</div>`;
+    // stesso stile a colori (a rotazione) della Libreria osservanze — richiesta 23/09/2026
+    const colorClass = `fasi-c${(ci % 4) + 1}`;
     return `
-      <div class="phrase-cat">
-        <div class="cat-title">${esc(c.categoria)}
-          <button class="del" data-del-fase-categoria="${ci}" title="Elimina intera categoria" style="margin-left:8px;">🗑 Elimina categoria</button>
-        </div>
+      <details class="phrase-cat ${colorClass} fasi-lib-cat" data-fase-cat-nome="${esc(c.categoria)}" ${FASI_LIB_CAT_OPEN[c.categoria]?'open':''}>
+        <summary class="cat-title"><span class="fasi-cat-name">${esc(c.categoria)}</span><span style="font-size:11px;font-weight:600;color:inherit;text-transform:none;letter-spacing:0;opacity:.75;flex-shrink:0;">(${c.voci.length} vo${c.voci.length===1?'ce':'ci'})</span></summary>
         ${rows}
         <div style="margin-top:8px;">
           <textarea id="new-fase-voce-${ci}" placeholder="Aggiungi una nuova voce/fase…" style="min-height:44px;"></textarea>
           <button class="btn small secondary" style="margin-top:6px;" data-add-fase-voce="${ci}">＋ Aggiungi a questa categoria</button>
         </div>
-      </div>`;
+        <div style="margin-top:8px;text-align:right;">
+          <button class="del" data-del-fase-categoria="${ci}" title="Elimina intera categoria">🗑 Elimina categoria</button>
+        </div>
+      </details>`;
   }).join('') || `<div class="hint">Nessuna categoria. Aggiungine una qui sotto.</div>`;
   return topWrap('Libreria fasi di lavoro','Le categorie e le voci selezionabili per le foto delle fasi di lavoro', `
     <section class="block">${blocks}</section>
@@ -1401,6 +2231,34 @@ function viewFasiLibreria(){
         <button class="btn secondary" data-add-fase-categoria="1">＋ Aggiungi categoria</button>
       </div>
     </section>
+  `);
+}
+
+/* ======================= CESTINO ======================= */
+const CESTINO_TIPO_LABELS = {
+  cantiere:'Cantiere', impresa:'Impresa', personale:'Dipendente', destinatario:'Destinatario',
+  frase:'Frase (Libreria osservanze)', fraseRiunione:'Frase (Libreria note riunioni)',
+  faseVoce:'Voce (Fasi di lavoro)', faseCategoria:'Categoria (Fasi di lavoro)',
+  verbale:'Verbale'
+};
+function viewCestino(){
+  const voci = (DB.cestino||[]);
+  const items = voci.map(e=>{
+    const giorni = cestinoGiorniRimasti(e.eliminatoIl);
+    return `
+    <div class="item-row">
+      <div class="main">
+        <div class="t">${esc(e.etichetta)}</div>
+        <div class="s">${esc(CESTINO_TIPO_LABELS[e.tipo]||e.tipo)}${e.dettaglio?' · '+esc(e.dettaglio):''}<br>eliminato il ${fmtDate(e.eliminatoIl)} · ${giorni>0?`${giorni} giorno${giorni===1?'':'i'} rimasti`:'in rimozione…'}</div>
+      </div>
+      <div class="actions">
+        <button class="iconbtn" data-restore-cestino="${e.id}" title="Ripristina">↩️ Ripristina</button>
+        <button class="iconbtn" data-del-cestino="${e.id}" title="Elimina definitivamente">🗑</button>
+      </div>
+    </div>`;
+  }).join('') || emptyState('🗑️','Cestino vuoto','Le cose che elimini nell\'app (cantieri, imprese, dipendenti, destinatari, frasi, voci/categorie, verbali) restano qui per 10 giorni prima di essere rimosse per sempre.');
+  return topWrap('Cestino', `Le cose eliminate restano qui ${CESTINO_GIORNI_RITENZIONE} giorni prima di essere rimosse per sempre`, `
+    <section class="block">${items}</section>
   `);
 }
 
@@ -1437,6 +2295,7 @@ function viewProfilo(){
         <button class="btn small secondary" style="margin-top:6px;" data-add-account="1">＋ Aggiungi un altro account</button>
       </div>
     </section>
+    ${viewAccountOnlineBox()}
     <div class="btn-row">
       <button class="btn danger" data-logout="1">Esci (logout)</button>
     </div>
@@ -1930,12 +2789,18 @@ function viewTrasferimentoDati(){
 }
 
 /* ======================= ARCHIVIO VERBALI ======================= */
+/* Etichetta breve del tipo di verbale, usata nell'Archivio per distinguere a colpo d'occhio i
+   verbali di visita (Allegato 10) da quelli di riunione iniziale (Allegato 8) — condividono lo
+   stesso archivio/numerazione per cantiere ma restano due documenti diversi (richiesta 23/09/2026). */
+function tipoVerbaleLabel(tipo){ return tipo==='riunione' ? 'Riunione iniziale' : 'Visita'; }
+
 function viewArchivio(){
-  ROUTE.filters = ROUTE.filters || {cantiere:'', numero:'', data:''};
+  ROUTE.filters = ROUTE.filters || {cantiere:'', numero:'', data:'', tipo:''};
   const f = ROUTE.filters;
   const matchFiltri = v => (!f.cantiere || v.cantiereId===f.cantiere)
     && (!f.numero || String(v.numero).includes(f.numero))
-    && (!f.data || v.data===f.data);
+    && (!f.data || v.data===f.data)
+    && (!f.tipo || (v.tipo||'visita')===f.tipo);
 
   let list = DB.verbaliIndex.filter(matchFiltri);
   list.sort((a,b)=> (b.data||'').localeCompare(a.data||'') || (b.createdAt||0)-(a.createdAt||0));
@@ -1946,12 +2811,15 @@ function viewArchivio(){
 
   const cantiereOpts = `<option value="">Tutti i cantieri</option>` +
     DB.cantieri.map(c=>`<option value="${c.id}" ${f.cantiere===c.id?'selected':''}>${esc(c.nome)}</option>`).join('');
+  const tipoOpts = `<option value="">Tutti i tipi</option>
+    <option value="visita" ${f.tipo==='visita'?'selected':''}>Visita</option>
+    <option value="riunione" ${f.tipo==='riunione'?'selected':''}>Riunione iniziale</option>`;
 
   const rows = list.map(v=>`
     <div class="item-row">
       <div class="main">
         <div class="t">Verbale n° ${v.numero}/${v.anno} — ${esc(v.cantiereNome||'')}</div>
-        <div class="s">${fmtDate(v.data)} · ${v.stato==='finale'?'✅ finalizzato':'📝 bozza'}${v.cse?` · compilato da ${esc(v.cse)}`:''}</div>
+        <div class="s">${tipoVerbaleLabel(v.tipo)} · ${fmtDate(v.data)} · ${v.stato==='finale'?'✅ finalizzato':'📝 bozza'}${v.cse?` · compilato da ${esc(v.cse)}`:''}</div>
       </div>
       <div class="actions">
         <button class="iconbtn" data-open-verbale="${v.id}">Apri</button>
@@ -1964,7 +2832,7 @@ function viewArchivio(){
     <div class="item-row">
       <div class="main">
         <div class="t">Verbale n° ${v.numero}/${v.anno} — ${esc(v.cantiereNome||'')}</div>
-        <div class="s">${fmtDate(v.data)}${v.cse?` · compilato da ${esc(v.cse)}`:''} · 🔗 su un altro dispositivo</div>
+        <div class="s">${tipoVerbaleLabel(v.tipo)} · ${fmtDate(v.data)}${v.cse?` · compilato da ${esc(v.cse)}`:''} · 🔗 su un altro dispositivo</div>
       </div>
     </div>`).join('');
 
@@ -1982,6 +2850,8 @@ function viewArchivio(){
     <section class="block">
       <label>Cantiere</label>
       <select id="filt-cantiere">${cantiereOpts}</select>
+      <label>Tipo</label>
+      <select id="filt-tipo">${tipoOpts}</select>
       <div class="row2">
         <div><label>N° verbale</label><input type="text" id="filt-numero" value="${esc(f.numero)}"></div>
         <div><label>Data</label><input type="date" id="filt-data" value="${f.data}"></div>
@@ -2000,50 +2870,74 @@ const STEP_TITLES = {
   sospensione:'Sospensione lavori (se necessaria)', firme:'Firme', destinatari:'Destinatari e invio'
 };
 
-function stepperHtml(step){
-  const idx = STEPS.indexOf(step);
-  return `<div class="stepper">${STEPS.map((s,i)=>`<div class="dot ${i<idx?'done':i===idx?'active':''}"></div>`).join('')}</div>
-  <div class="step-label">Passaggio ${idx+1} di ${STEPS.length} · ${STEP_TITLES[step]}</div>`;
+/* Verbale di riunione iniziale di coordinamento (Allegato 8, richiesta 23/09/2026): passaggi propri
+   del wizard, distinti da STEPS/STEP_TITLES sopra (verbale di visita, Allegato 10). I passaggi
+   "cantiere", "presenti" e "destinatari" condividono lo stesso nome e la stessa funzione wiz* del
+   verbale di visita (vedi viewWizard()) perché operano su campi generici identici. */
+const RIUNIONE_STEPS = ['cantiere','incontro','imprese','presenti','ordinegiorno','verifiche','rls','note','firme','destinatari'];
+const RIUNIONE_STEP_TITLES = {
+  cantiere:'Cantiere e data', incontro:'Luogo e orari della riunione', imprese:'Imprese e referenti',
+  presenti:'Presenti alla riunione', ordinegiorno:'Ordine del giorno',
+  verifiche:'Verifiche del CSE (POS, PSC, organizzazione)', rls:'Rappresentanti per la sicurezza (RLS/RLST)',
+  note:'Note del CSE e prossima riunione', firme:'Firma', destinatari:'Destinatari e invio'
+};
+
+function stepperHtml(step, steps, titles){
+  const idx = steps.indexOf(step);
+  return `<div class="stepper">${steps.map((s,i)=>`<div class="dot ${i<idx?'done':i===idx?'active':''}"></div>`).join('')}</div>
+  <div class="step-label">Passaggio ${idx+1} di ${steps.length} · ${titles[step]}</div>`;
 }
 
 function viewWizard(step){
   if(!CURRENT_VERBALE){ go({name:'home'}); return ''; }
-  step = step || 'cantiere';
   const v = CURRENT_VERBALE;
+  const isRiunione = v.tipo==='riunione';
+  const steps = isRiunione ? RIUNIONE_STEPS : STEPS;
+  const titles = isRiunione ? RIUNIONE_STEP_TITLES : STEP_TITLES;
+  step = step || steps[0];
   let body='';
   if(step==='cantiere') body=wizCantiere(v);
   else if(step==='orari') body=wizOrari(v);
-  else if(step==='imprese') body=wizImprese(v);
+  else if(step==='incontro') body=wizIncontro(v);
+  else if(step==='imprese') body = isRiunione ? wizImpreseRiunione(v) : wizImprese(v);
   else if(step==='presenti') body=wizPresenti(v);
   else if(step==='fasi') body=wizFasi(v);
   else if(step==='osservanze') body=wizOsservanze(v);
   else if(step==='sospensione') body=wizSospensione(v);
-  else if(step==='firme') body=wizFirme(v);
+  else if(step==='ordinegiorno') body=wizOrdineGiorno(v);
+  else if(step==='verifiche') body=wizVerifiche(v);
+  else if(step==='rls') body=wizRls(v);
+  else if(step==='note') body=wizNoteRiunione(v);
+  else if(step==='firme') body = isRiunione ? wizFirmeRiunione(v) : wizFirme(v);
   else if(step==='destinatari') body=wizDestinatari(v);
 
-  const idx = STEPS.indexOf(step);
-  const isLast = idx===STEPS.length-1;
+  const idx = steps.indexOf(step);
+  const isLast = idx===steps.length-1;
   return `
   <div class="topbar">
     ${idx>0
-      ? `<button class="back" data-wizard-nav="${STEPS[idx-1]}">‹</button>`
+      ? `<button class="back" data-wizard-nav="${steps[idx-1]}">‹</button>`
       : `<button class="back" data-go="home-confirm">‹</button>`}
     <h1>Verbale n° ${v.numero}/${v.anno}<span class="sub">${esc(v.cantiereNome)}</span></h1>
     <button class="save-draft" data-save-bozza-wizard="1" title="Salva il verbale come bozza senza uscire dalla compilazione">💾 Bozza</button>
   </div>
-  ${stepperHtml(step)}
+  ${stepperHtml(step, steps, titles)}
   <div class="content">
     ${body}
     <div class="btn-row">
-      ${idx>0?`<button class="btn secondary" data-wizard-nav="${STEPS[idx-1]}">‹ Indietro</button>`:'<div style="flex:1"></div>'}
+      ${idx>0?`<button class="btn secondary" data-wizard-nav="${steps[idx-1]}">‹ Indietro</button>`:'<div style="flex:1"></div>'}
       ${isLast?`<button class="btn" data-go-anteprima="1">Anteprima ›</button>`
-              :`<button class="btn" data-wizard-nav="${STEPS[idx+1]}">Avanti ›</button>`}
+              :`<button class="btn" data-wizard-nav="${steps[idx+1]}">Avanti ›</button>`}
     </div>
   </div>`;
 }
 
 function wizCantiere(v){
-  const opts = DB.cantieri.map(c=>`<option value="${c.id}" ${c.id===v.cantiereId?'selected':''}>${esc(c.nome)}</option>`).join('');
+  // i cantieri completati non sono selezionabili per un nuovo verbale, ma se questo verbale ne usa già
+  // uno (es. una bozza aperta prima che il cantiere venisse completato) resta comunque in elenco/selezionato,
+  // altrimenti la select perderebbe il valore e cantiereNome/cantiereId non combacerebbero più.
+  const opts = DB.cantieri.filter(c=>!c.completato || c.id===v.cantiereId)
+    .map(c=>`<option value="${c.id}" ${c.id===v.cantiereId?'selected':''}>${esc(c.nome)}${c.completato?' (completato)':''}</option>`).join('');
   return `
   <section class="block">
     <label>Cantiere *</label>
@@ -2185,7 +3079,11 @@ function wizFasi(v){
         <select data-fase-voce="${idx}" ${catDef?'':'disabled'}>${voceOptions}</select>
       </div>
       <div class="cap"><input type="text" placeholder="Didascalia foto" value="${esc(p.caption)}" data-fase-cap="${idx}"></div>
-      <button class="rm" data-rm-fase-foto="${idx}">Rimuovi</button>
+      <div class="actions">
+        <label class="retake" for="fase-photo-retake-${idx}">🔄 Ricatta</label>
+        <button class="rm" data-rm-fase-foto="${idx}">Rimuovi</button>
+      </div>
+      <input type="file" id="fase-photo-retake-${idx}" accept="image/*" capture="environment" style="display:none;" data-fase-photo-retake="${idx}">
     </div>`;
   }).join('');
   return `
@@ -2231,7 +3129,11 @@ function wizOsservanze(v){
     <div class="photo-card">
       <img src="${p.img}">
       <div class="cap"><input type="text" placeholder="Didascalia" value="${esc(p.caption)}" data-oss-cap="${idx}"></div>
-      <button class="rm" data-rm-oss-foto="${idx}">Rimuovi</button>
+      <div class="actions">
+        <label class="retake" for="oss-photo-retake-${idx}">🔄 Ricatta</label>
+        <button class="rm" data-rm-oss-foto="${idx}">Rimuovi</button>
+      </div>
+      <input type="file" id="oss-photo-retake-${idx}" accept="image/*" capture="environment" style="display:none;" data-oss-photo-retake="${idx}">
     </div>`).join('');
 
   return `
@@ -2280,14 +3182,22 @@ function wizSospensione(v){
     <div class="photo-card">
       <img src="${p.img}">
       <div class="cap"><input type="text" placeholder="Didascalia" value="${esc(p.caption)}" data-susp-rip-cap="${idx}"></div>
-      <button class="rm" data-rm-susp-rip-foto="${idx}">Rimuovi</button>
+      <div class="actions">
+        <label class="retake" for="susp-rip-photo-retake-${idx}">🔄 Ricatta</label>
+        <button class="rm" data-rm-susp-rip-foto="${idx}">Rimuovi</button>
+      </div>
+      <input type="file" id="susp-rip-photo-retake-${idx}" accept="image/*" capture="environment" style="display:none;" data-susp-rip-photo-retake="${idx}">
     </div>`).join('');
   const ripristinoCount = (s.fotoRipristino||[]).length;
   const fasePhotos = (s.fotoFase||[]).map((p,idx)=>`
     <div class="photo-card">
       <img src="${p.img}">
       <div class="cap"><input type="text" placeholder="Didascalia" value="${esc(p.caption)}" data-susp-fase-cap="${idx}"></div>
-      <button class="rm" data-rm-susp-fase-foto="${idx}">Rimuovi</button>
+      <div class="actions">
+        <label class="retake" for="susp-fase-photo-retake-${idx}">🔄 Ricatta</label>
+        <button class="rm" data-rm-susp-fase-foto="${idx}">Rimuovi</button>
+      </div>
+      <input type="file" id="susp-fase-photo-retake-${idx}" accept="image/*" capture="environment" style="display:none;" data-susp-fase-photo-retake="${idx}">
     </div>`).join('');
   if(!s.attiva){
     return `
@@ -2353,12 +3263,16 @@ function setFirmaImg(v, key, val){
   const m = /^preposto-(\d+)$/.exec(key);
   if(m && v.impreseCoinvolte[+m[1]]) v.impreseCoinvolte[+m[1]].firmaPrepostoImg = val;
 }
-function signatureBlock(key, img){
+function signatureBlock(key, img, label){
+  const filenameBase = 'Firma_' + (label||key).replace(/[^a-z0-9]+/gi,'_').replace(/^_+|_+$/g,'');
   if(img){
     return `
     <div class="sig-pad-wrap" data-sig-key="${key}">
       <div class="sig-preview"><img src="${img}" alt="Firma"></div>
-      <button class="btn small secondary" type="button" data-sig-redo="${key}">Cambia / rimuovi firma</button>
+      <div class="btn-row">
+        <button class="btn small secondary" type="button" data-sig-redo="${key}">Cambia / rimuovi firma</button>
+        <button class="btn small ghost" type="button" data-sig-download="${key}" data-sig-filename="${esc(filenameBase)}">⬇️ Scarica PNG</button>
+      </div>
     </div>`;
   }
   return `
@@ -2395,7 +3309,7 @@ function wizFirme(v){
       <label>Preposto — ${esc(ic.nome)}</label>
       <input type="text" data-preposto-idx="${idx}" value="${esc(prepostoValue)}" placeholder="Nome e cognome del preposto">
       <div class="hint">Nessun presente spuntato per questa impresa nel passaggio "Presenti": qui puoi comunque scrivere il nome a mano, oppure torna indietro e spuntalo per poterlo scegliere da un elenco.</div>
-      ${signatureBlock('preposto-'+idx, ic.firmaPrepostoImg||null)}
+      ${signatureBlock('preposto-'+idx, ic.firmaPrepostoImg||null, 'Preposto_'+ic.nome)}
       `;
     }
     const options = [`<option value="">Seleziona preposto…</option>`]
@@ -2410,7 +3324,7 @@ function wizFirme(v){
     <label>Preposto — ${esc(ic.nome)}</label>
     <select data-preposto-select-idx="${idx}">${options}</select>
     ${isAltro?`<input type="text" data-preposto-idx="${idx}" value="${esc(prepostoValue)}" placeholder="Nome e cognome del preposto" style="margin-top:6px;">`:''}
-    ${signatureBlock('preposto-'+idx, ic.firmaPrepostoImg||null)}
+    ${signatureBlock('preposto-'+idx, ic.firmaPrepostoImg||null, 'Preposto_'+ic.nome)}
     `;
   }).join('') || `<div class="hint">Aggiungi prima le imprese coinvolte per poter indicare i rispettivi preposti.</div>`;
 
@@ -2420,10 +3334,10 @@ function wizFirme(v){
     <div class="hint">Il documento finale riporta una riga firma per ciascun nominativo indicato qui sotto. Per ogni firma puoi disegnarla col dito/mouse oppure caricare un'immagine — resta comunque possibile firmare a mano sul foglio stampato.</div>
     <label>Il coordinatore della sicurezza in fase di esecuzione (CSE)</label>
     <input type="text" id="w-cse-firma" value="${esc(v.cse)}">
-    ${signatureBlock('cse', v.firmaCSEImg||null)}
+    ${signatureBlock('cse', v.firmaCSEImg||null, 'CSE')}
     <label>Assistente CSE</label>
     <input type="text" id="w-assistente-cse" value="${esc(v.assistenteCSE)}" placeholder="Nome e cognome (opzionale)">
-    ${signatureBlock('assistente', v.assistenteCSEImg||null)}
+    ${signatureBlock('assistente', v.assistenteCSEImg||null, 'Assistente_CSE')}
   </section>
   <section class="block">
     <h3>Preposto per ciascuna impresa</h3>
@@ -2435,7 +3349,7 @@ function wizFirme(v){
     <input type="text" id="w-extra-label" value="${esc(v.firmaExtra.label)}" placeholder="Es. Committente, Rappresentante ITG…">
     <label>Nome e cognome</label>
     <input type="text" id="w-extra-nome" value="${esc(v.firmaExtra.nome)}" placeholder="(opzionale)">
-    ${signatureBlock('extra', v.firmaExtra.img||null)}
+    ${signatureBlock('extra', v.firmaExtra.img||null, v.firmaExtra.label||'Extra')}
   </section>`;
 }
 
@@ -2463,6 +3377,345 @@ function wizDestinatari(v){
       <div><b>Rimane in cantiere a disposizione degli Enti di Vigilanza</b></div>
       <label class="switch"><input type="checkbox" id="w-rimane" ${v.rimaneCantiere?'checked':''}><span class="track"></span><span class="knob"></span></label>
     </div>
+  </section>`;
+}
+
+/* ======================= WIZARD — VERBALE DI RIUNIONE INIZIALE (Allegato 8) =======================
+   Passaggi propri (vedi RIUNIONE_STEPS sopra): il modello di riferimento (Italgas Reti, Allegato 8 —
+   VERBALE RIUNIONE INIZIALE DI COORDINAMENTO) ha una struttura diversa dalla visita di cantiere, con
+   luogo/orari della riunione, un referente per ciascuna impresa, un ordine del giorno, alcune verifiche
+   di competenza del CSE, l'elenco degli RLS/RLST invitati e le note finali del CSE. La corposa parte
+   di testo fisso a carattere legale/normativo del modello (riferimenti al D.Lgs 81/2008, procedure di
+   verifica, ecc.) è riportata come testo fisso nel documento generato (vedi viewDocumentoRiunione()),
+   non come campi compilabili, per non appesantire il wizard: qui restano modificabili solo i punti
+   effettivamente variabili individuati nel modello di riferimento caricato dall'utente. */
+function wizIncontro(v){
+  return `
+  <section class="block">
+    <h3>Luogo della riunione</h3>
+    <div class="chip-list">
+      <span class="chip ${v.luogoRiunione==='cantiere'?'on':''}" data-set-luogo-riunione="cantiere">In cantiere</span>
+      <span class="chip ${v.luogoRiunione==='altro'?'on':''}" data-set-luogo-riunione="altro">Altro luogo</span>
+    </div>
+    ${v.luogoRiunione==='altro'?`<label>Specificare il luogo</label><input type="text" id="w-luogo-altro" value="${esc(v.luogoAltro)}">`:''}
+  </section>
+  <section class="block">
+    <h3>Orari</h3>
+    <label>Inizio riunione</label>
+    <input type="time" id="w-ora-inizio" value="${v.oraInizio}">
+    <label>Fine riunione</label>
+    <input type="time" id="w-ora-fine" value="${v.oraFine}">
+    <label>Data redazione verbale</label>
+    <input type="date" id="w-data-redazione" value="${v.dataRedazione}">
+    <label>Ora redazione verbale</label>
+    <input type="time" id="w-ora-redazione" value="${v.oraRedazione}">
+    <div class="hint">Il totale ore complessive viene calcolato automaticamente nel documento finale, sulla base di inizio riunione e ora di redazione.</div>
+  </section>`;
+}
+
+/* Candidati referente per una data impresa, nel passaggio "Imprese e referenti": qui (a differenza
+   del Preposto nel passaggio "Firme") il passaggio "Presenti" non e' ancora stato compilato, quindi
+   si propongono tutti i dipendenti archiviati per quell'impresa (non solo i presenti spuntati),
+   come richiesto dall'utente ("selezionare tra i dipendenti dell'impresa selezionata", 24/09/2026). */
+function candidatiReferenteImpresa(impresaId){
+  return DB.personale.filter(p => p.impresaId===impresaId);
+}
+
+/* Come wizImprese(), ma con in più il referente (nome e mansione) che ciascuna impresa indica per la
+   riunione — richiesto dal modello ("con: [ruolo] nella persona di ... avente mansioni di ..."),
+   assente nel verbale di visita. Aggiunta/rimozione impresa e selezione ruoli riusano esattamente gli
+   stessi gestori di wizImprese() (data-add-impresa-verbale, data-rm-impresa-verbale, data-set-ruolo-impresa).
+   Il nome del referente si sceglie da un menù a tendina tra i dipendenti dell'impresa (con fallback
+   "Altro" a testo libero), stesso meccanismo del Preposto — richiesta 24/09/2026, commento sull'Artifact. */
+function wizImpreseRiunione(v){
+  const chosenIds = v.impreseCoinvolte.map(x=>x.impresaId);
+  const avail = DB.imprese.filter(i=>!chosenIds.includes(i.id));
+  const cards = v.impreseCoinvolte.map((ic,idx)=>{
+    const candidati = candidatiReferenteImpresa(ic.impresaId);
+    const referenteValue = ic.referenteNome||'';
+    const candidatoAttuale = candidati.find(p => `${p.nome} ${p.cognome}` === referenteValue);
+    const isAltro = !!ic.referenteNomeAltro || (!!referenteValue && !candidatoAttuale);
+    const referenteField = candidati.length===0 ? `
+      <input type="text" data-referente-nome-idx="${idx}" value="${esc(referenteValue)}" placeholder="Nome e cognome">
+      <div class="hint">Nessun dipendente archiviato per questa impresa: qui puoi comunque scrivere il nome a mano, oppure aggiungilo dalla sezione Personale per poterlo scegliere da un elenco.</div>` : `
+      <select data-referente-select-idx="${idx}">${
+        [`<option value="">Seleziona referente…</option>`]
+          .concat(candidati.map(p=>{
+            const val = `${p.nome} ${p.cognome}`;
+            const label = p.mansione ? `${val} — ${esc(p.mansione)}` : val;
+            return `<option value="${esc(val)}" ${val===referenteValue?'selected':''}>${label}</option>`;
+          }))
+          .concat([`<option value="__altro__" ${isAltro?'selected':''}>✎ Altro (scrivi il nome)</option>`])
+          .join('')
+      }</select>
+      ${isAltro?`<input type="text" data-referente-nome-idx="${idx}" value="${esc(referenteValue)}" placeholder="Nome e cognome del referente" style="margin-top:6px;">`:''}`;
+    const presente = ic.presente!==false;
+    return `
+    <div class="impresa-card">
+      <div class="head"><div class="name">${esc(ic.nome)}</div>
+        <button class="iconbtn" data-rm-impresa-verbale="${idx}">Rimuovi</button></div>
+      <div class="role-select">
+        ${IMPRESA_RUOLI.map(r=>`<span class="chip ${ruoliOf(ic).includes(r)?'on':''}" data-set-ruolo-impresa="${idx}" data-ruolo="${r}">${r}</span>`).join('')}
+      </div>
+      <div class="hint" style="margin-top:4px;">Ruolo dell'impresa nel cantiere — tocca per selezionare uno o più ruoli. È indipendente dalla presenza a questa riunione (sotto).</div>
+      <div class="toggle-row" style="margin-top:10px;">
+        <div><b>Presente a questa riunione</b></div>
+        <label class="switch"><input type="checkbox" data-impresa-presente-idx="${idx}" ${presente?'checked':''}><span class="track"></span><span class="knob"></span></label>
+      </div>
+      ${presente ? `
+      <label style="margin-top:8px;">Referente in riunione</label>
+      ${referenteField}
+      <label>Mansione del referente</label>
+      <input type="text" data-referente-mansione-idx="${idx}" value="${esc(ic.referenteMansione||'')}" placeholder="es. Preposto, Datore di lavoro…">` : `
+      <div class="hint" style="margin-top:8px;">Impresa coinvolta nel cantiere ma non presente a questa riunione: nessun referente da indicare qui. Il documento la riporterà comunque tra le imprese coinvolte, senza il riferimento "nella persona di…".</div>`}
+    </div>`;
+  }).join('') || `<div class="hint">Nessuna impresa selezionata per questo verbale.</div>`;
+  const addOpts = avail.map(i=>`<option value="${i.id}">${esc(i.nome)}</option>`).join('');
+  return `
+  <section class="block">
+    <h3>Imprese in questo verbale</h3>
+    <div class="hint">Aggiungi qui le imprese coinvolte nel cantiere, col relativo ruolo. Per ciascuna, indica anche se è presente a questa riunione: solo per le imprese presenti va indicato il referente (nome e mansione).</div>
+    ${cards}
+    ${avail.length?`
+    <label>Aggiungi impresa dall'archivio</label>
+    <select id="w-add-impresa">${addOpts}</select>
+    <button class="btn secondary small" style="margin-top:8px;" data-add-impresa-verbale="1">＋ Aggiungi</button>
+    `:`<div class="hint">Tutte le imprese archiviate sono già state aggiunte. Puoi aggiungerne di nuove nella sezione Imprese.</div>`}
+  </section>`;
+}
+
+/* "Verifica della documentazione consegnata" (Ordine del giorno, verbale di riunione): il nome
+   dell'impresa/e va scelto da un menù a tendina tra le imprese già coinvolte nel verbale (passaggio
+   "Imprese e referenti"), filtrate per ruolo, invece di essere ridigitato a mano — stesso meccanismo
+   già usato per il Preposto nel passaggio "Firme" (richiesta 24/09/2026, commento sull'Artifact).
+   Se nessuna impresa coinvolta ha quel ruolo, resta un campo libero con un promemoria. */
+function vdocSelectBlock(v, key, label, ruolo){
+  const vd = v.ordineGiorno.verificaDoc;
+  const value = vd[key]||'';
+  const candidati = v.impreseCoinvolte.filter(ic => ruoliOf(ic).includes(ruolo));
+  if(candidati.length===0){
+    return `
+    <label>${label}</label>
+    <input type="text" data-og-vdoc-text="${key}" value="${esc(value)}">
+    <div class="hint">Nessuna impresa con ruolo "${esc(ruolo)}" tra quelle coinvolte nel passaggio "Imprese e referenti": qui puoi comunque scrivere il nome a mano, oppure torna indietro e aggiungila per poterla scegliere da un elenco.</div>`;
+  }
+  const isAltro = !!vd[key+'Altro'] || (!!value && !candidati.some(ic=>ic.nome===value));
+  const options = [`<option value="">Seleziona impresa…</option>`]
+    .concat(candidati.map(ic=>`<option value="${esc(ic.nome)}" ${ic.nome===value?'selected':''}>${esc(ic.nome)}</option>`))
+    .concat([`<option value="__altro__" ${isAltro?'selected':''}>✎ Altro (scrivi liberamente)</option>`])
+    .join('');
+  return `
+  <label>${label}</label>
+  <select data-og-vdoc-select="${key}">${options}</select>
+  ${isAltro?`<input type="text" data-og-vdoc-text="${key}" value="${esc(value)}" style="margin-top:6px;">`:''}`;
+}
+function wizOrdineGiorno(v){
+  const og = v.ordineGiorno;
+  // Selezione da Libreria note riunioni, categoria "variazioniProgettuali" — richiesta 24/09/2026 via
+  // commento sull'Artifact ("aggiungi opzione di spuntare dalla libreria dalla categoria variazioni
+  // progettuali"), stesso meccanismo già usato per Note del CSE e Verifiche del CSE, ma qui limitato
+  // a questa sola categoria (la sezione riguarda solo le variazioni progettuali).
+  const vzCat = 'variazioniProgettuali';
+  const vzList = og.variazioni.selFrasi || [];
+  const vzItems = (DB.frasiRiunione||[]).filter(f=>f.categoria===vzCat);
+  const vzIdx = CAT_ORDER_RIUNIONE.indexOf(vzCat);
+  let vzBlock;
+  if(vzItems.length===0){
+    vzBlock = `<div class="hint">Nessuna frase in libreria per questa categoria — aggiungine dalla Home, "Libreria note riunioni".</div>`;
+  } else {
+    const rows = vzItems.map(f=>`
+      <div class="phrase-item">
+        <input type="checkbox" data-og-variazioni-check data-frase="${f.id}" ${vzList.includes(f.id)?'checked':''}>
+        <div class="txt">${esc(f.testo)}</div>
+      </div>`).join('');
+    const allSelected = vzItems.every(f=>vzList.includes(f.id));
+    vzBlock = `
+    <details class="phrase-cat ${vzCat} riu-c${(vzIdx%4)+1}" ${PHRASE_CAT_OPEN[vzCat]?'open':''}>
+      <summary class="cat-title">${CAT_LABELS_RIUNIONE[vzCat]}</summary>
+      <label class="phrase-item" style="font-weight:600;border-bottom:1px solid var(--line);padding-bottom:6px;margin-bottom:6px;">
+        <input type="checkbox" data-og-variazioni-select-all ${allSelected?'checked':''}>
+        <div class="txt">Seleziona / deseleziona tutte</div>
+      </label>
+      ${rows}
+    </details>`;
+  }
+  return `
+  <section class="block">
+    <h3>Ordine del giorno della riunione</h3>
+    <div class="hint">La riunione è convocata dal CSE per discutere i punti seguenti: spunta quelli trattati e aggiungi le note.</div>
+    <div class="toggle-row">
+      <div><b>Verifica di eventuali variazioni progettuali</b></div>
+      <label class="switch"><input type="checkbox" id="w-og-variazioni-chk" ${og.variazioni.checked?'checked':''}><span class="track"></span><span class="knob"></span></label>
+    </div>
+    <div class="hint" style="margin-bottom:8px;">Seleziona le frasi dalla libreria dedicata alle riunioni iniziali (categoria "Variazioni progettuali") e/o descrivi liberamente. La libreria si gestisce dalla Home, "Libreria note riunioni".</div>
+    ${vzBlock}
+    <label style="margin-top:10px;display:block;">Descrizione libera aggiuntiva</label>
+    <textarea id="w-og-variazioni-testo" rows="3" placeholder="Descrivi le eventuali variazioni…">${esc(og.variazioni.testo)}</textarea>
+  </section>
+  <section class="block">
+    <div class="toggle-row">
+      <div><b>Verifica della documentazione consegnata</b></div>
+      <label class="switch"><input type="checkbox" id="w-og-verificadoc-chk" ${og.verificaDoc.checked?'checked':''}><span class="track"></span><span class="knob"></span></label>
+    </div>
+    ${vdocSelectBlock(v, 'affidataria', 'Da impresa affidataria', 'Impresa affidataria')}
+    ${vdocSelectBlock(v, 'subappalto', 'Da imprese in subappalto', 'Impresa in subappalto')}
+    ${vdocSelectBlock(v, 'autonomi', 'Da lavoratori autonomi', 'Lavoratore autonomo in subappalto')}
+    <div class="hint">In riferimento a quanto richiesto dal D.Lgs n° 81/2008 e di sola pertinenza del CSE — il risultato della verifica e le eventuali prescrizioni si scrivono nel passaggio successivo, "Verifiche del CSE".</div>
+  </section>`;
+}
+
+/* Come wizNoteRiunione(): frasi selezionabili dalla stessa Libreria note riunioni, in aggiunta al
+   testo libero — estesa qui alle "Verifiche del CSE" (POS/art.102/organizzazione), richiesta
+   24/09/2026 via commento sull'Artifact ("qua bisogna poter selezionare delle note da una
+   libreria... ed aggiungere note libere", stessa richiesta gia' fatta per "Note del CSE"). Ogni
+   punto ha una propria selezione (v.verifiche[key].selFrasi), indipendente dalle altre. */
+function wizVerifiche(v){
+  const ve = v.verifiche;
+  const item = (key, label, hint) => {
+    const list = ve[key].selFrasi || [];
+    const hasAny = (DB.frasiRiunione||[]).length>0;
+    const catBlock = (cat, idx) => {
+      const items = DB.frasiRiunione.filter(f=>f.categoria===cat);
+      if(items.length===0) return '';
+      const rows = items.map(f=>`
+        <div class="phrase-item">
+          <input type="checkbox" data-ver-frase-check="${key}" data-frase="${f.id}" ${list.includes(f.id)?'checked':''}>
+          <div class="txt">${esc(f.testo)}</div>
+        </div>`).join('');
+      const allSelected = items.every(f=>list.includes(f.id));
+      return `
+      <details class="phrase-cat ${cat} riu-c${(idx%4)+1}" ${PHRASE_CAT_OPEN[cat]?'open':''}>
+        <summary class="cat-title">${CAT_LABELS_RIUNIONE[cat]}</summary>
+        <label class="phrase-item" style="font-weight:600;border-bottom:1px solid var(--line);padding-bottom:6px;margin-bottom:6px;">
+          <input type="checkbox" data-ver-select-all-key="${key}" data-ver-select-all-cat="${cat}" ${allSelected?'checked':''}>
+          <div class="txt">Seleziona / deseleziona tutte</div>
+        </label>
+        ${rows}
+      </details>`;
+    };
+    const blocks = hasAny ? CAT_ORDER_RIUNIONE.map(catBlock).join('') : `<div class="hint">Nessuna frase in libreria — aggiungine dalla Home, "Libreria note riunioni".</div>`;
+    return `
+  <section class="block">
+    <div class="toggle-row"><div><b>${label}</b></div>
+      <label class="switch"><input type="checkbox" id="w-ver-${key}-chk" ${ve[key].checked?'checked':''}><span class="track"></span><span class="knob"></span></label>
+    </div>
+    ${hint?`<div class="hint">${hint}</div>`:''}
+    <div class="hint" style="margin-bottom:8px;">Seleziona le frasi dalla libreria dedicata alle riunioni iniziali (organizzata per categoria) e/o aggiungi note libere. La libreria si gestisce dalla Home, "Libreria note riunioni".</div>
+    ${blocks}
+    <label style="margin-top:10px;display:block;">Note libere aggiuntive</label>
+    <textarea id="w-ver-${key}-testo" rows="3" placeholder="Note / prescrizioni…">${esc(ve[key].testo)}</textarea>
+  </section>`;
+  };
+  return item('pos','Comunicazioni e prescrizioni sul Piano Operativo di Sicurezza (POS)')
+   + item('art102','Verifica delle disposizioni del PSC — art. 102 comma 1 (consultazione RLS)')
+   + item('organizzazione','Organizzazione, cooperazione e coordinamento tra i datori di lavoro',
+       'Indicazioni sull\'organizzazione tra i datori di lavoro, ivi compresi i lavoratori autonomi, sulla cooperazione ed il coordinamento delle attività, nonché la loro reciproca informazione.');
+}
+
+/* Etichetta di una riga RLS/RLST arricchita col nome dell'impresa scelta (se presente), per il
+   documento generato: es. "RLS impresa esecutrice (ProgettoXYZ srl)" invece del solo "RLS impresa
+   esecutrice" — utile per distinguere a colpo d'occhio quando ci sono piu' imprese con lo stesso ruolo. */
+function rlsLabelConImpresa(r){
+  return r.impresaNome ? `${r.label} (${r.impresaNome})` : r.label;
+}
+/* Per le righe RLS/RLST di "impresa affidataria"/"impresa esecutrice" (non per quelle del
+   committente, che non hanno un'impresa coinvolta corrispondente): l'impresa a cui si riferisce la
+   riga si sceglie da un menù a tendina tra quelle coinvolte nel verbale con quel ruolo (passaggio
+   "Imprese e referenti"), invece di restare implicita — utile quando ci sono piu' imprese con lo
+   stesso ruolo. Stesso meccanismo di vdocSelectBlock() (richiesta 24/09/2026, commento sull'Artifact
+   "qua mi devi far selezionare da un menù a tendina le imprese presenti"). */
+function rlsImpresaField(v, r, idx){
+  if(!r.ruolo) return '';
+  const candidati = v.impreseCoinvolte.filter(ic => ruoliOf(ic).includes(r.ruolo));
+  const value = r.impresaNome||'';
+  if(candidati.length===0){
+    return `
+    <label style="margin-top:6px;">Impresa (${esc(r.ruolo)})</label>
+    <input type="text" data-rls-impresa-text="${idx}" value="${esc(value)}" placeholder="Nome impresa" style="margin-bottom:10px;">
+    <div class="hint">Nessuna impresa con ruolo "${esc(r.ruolo)}" tra quelle coinvolte nel passaggio "Imprese e referenti": qui puoi scrivere il nome a mano, oppure torna indietro e aggiungila per poterla scegliere da un elenco.</div>`;
+  }
+  const isAltro = !!r.impresaAltro || (!!value && !candidati.some(ic=>ic.nome===value));
+  const options = [`<option value="">Seleziona impresa…</option>`]
+    .concat(candidati.map(ic=>`<option value="${esc(ic.nome)}" ${ic.nome===value?'selected':''}>${esc(ic.nome)}</option>`))
+    .concat([`<option value="__altro__" ${isAltro?'selected':''}>✎ Altro (scrivi liberamente)</option>`])
+    .join('');
+  return `
+    <label style="margin-top:6px;">Impresa (${esc(r.ruolo)})</label>
+    <select data-rls-impresa-select="${idx}">${options}</select>
+    ${isAltro?`<input type="text" data-rls-impresa-text="${idx}" value="${esc(value)}" style="margin-top:6px;margin-bottom:10px;">`:''}`;
+}
+function wizRls(v){
+  const rows = v.rls.map((r,idx)=>`
+    <div class="toggle-row">
+      <div><b>${esc(r.label)}</b></div>
+      <label class="switch"><input type="checkbox" id="w-rls-chk-${idx}" ${r.checked?'checked':''}><span class="track"></span><span class="knob"></span></label>
+    </div>
+    ${rlsImpresaField(v, r, idx)}
+    <input type="text" id="w-rls-nome-${idx}" value="${esc(r.nome)}" placeholder="Nome e cognome" style="margin-bottom:10px;">
+  `).join('');
+  return `
+  <section class="block">
+    <h3>Invito ai rappresentanti per la sicurezza</h3>
+    ${rows}
+  </section>
+  <section class="block">
+    <div class="toggle-row">
+      <div><b>La verifica non ha potuto svolgersi per assenza dei rappresentanti invitati</b></div>
+      <label class="switch"><input type="checkbox" id="w-rls-assenti" ${v.rlsAssenti?'checked':''}><span class="track"></span><span class="knob"></span></label>
+    </div>
+    <label>Considerazioni degli RLS (o "nulla da segnalare")</label>
+    <textarea id="w-rls-note" rows="3">${esc(v.rlsNote)}</textarea>
+  </section>`;
+}
+
+function wizNoteRiunione(v){
+  const list = v.noteCSESelFrasi || [];
+  const hasAny = (DB.frasiRiunione||[]).length>0;
+  const catBlock = (cat, idx) => {
+    const items = DB.frasiRiunione.filter(f=>f.categoria===cat);
+    if(items.length===0) return '';
+    const rows = items.map(f=>`
+      <div class="phrase-item">
+        <input type="checkbox" data-note-cse-check data-frase="${f.id}" ${list.includes(f.id)?'checked':''}>
+        <div class="txt">${esc(f.testo)}</div>
+      </div>`).join('');
+    const allSelected = items.every(f=>list.includes(f.id));
+    return `
+    <details class="phrase-cat ${cat} riu-c${(idx%4)+1}" ${PHRASE_CAT_OPEN[cat]?'open':''}>
+      <summary class="cat-title">${CAT_LABELS_RIUNIONE[cat]}</summary>
+      <label class="phrase-item" style="font-weight:600;border-bottom:1px solid var(--line);padding-bottom:6px;margin-bottom:6px;">
+        <input type="checkbox" data-note-cse-select-all="${cat}" ${allSelected?'checked':''}>
+        <div class="txt">Seleziona / deseleziona tutte</div>
+      </label>
+      ${rows}
+    </details>`;
+  };
+  const blocks = hasAny ? CAT_ORDER_RIUNIONE.map(catBlock).join('') : `<div class="hint">Nessuna frase in libreria — aggiungine dalla Home, "Libreria note riunioni".</div>`;
+  return `
+  <section class="block">
+    <h3>Prossima riunione di coordinamento</h3>
+    <input type="text" id="w-prossima-riunione" value="${esc(v.prossimaRiunione)}">
+  </section>
+  <section class="block">
+    <h3>Note del CSE</h3>
+    <div class="hint" style="margin-bottom:8px;">Seleziona le frasi dalla libreria dedicata alle riunioni iniziali (organizzata per categoria) e/o aggiungi note libere. La libreria si gestisce dalla Home, "Libreria note riunioni".</div>
+    ${blocks}
+    <label style="margin-top:10px;display:block;">Note libere aggiuntive</label>
+    <textarea id="w-note-cse" rows="6" placeholder="Note, prescrizioni e indicazioni del coordinatore…">${esc(v.noteCSE)}</textarea>
+  </section>`;
+}
+
+/* Firme del verbale di riunione: solo il CSE (che redige il verbale) firma digitalmente in app — le
+   firme dei partecipanti alla riunione restano manoscritte sul foglio stampato/inviato, come nel
+   modello di riferimento ("Firma dei partecipanti alla riunione — per presa visione"). */
+function wizFirmeRiunione(v){
+  return `
+  <section class="block">
+    <h3>Firma del verbale</h3>
+    <div class="hint">Le firme dei partecipanti restano manoscritte sul foglio stampato/inviato: qui si registra solo la firma del CSE, che redige il verbale.</div>
+    <label>Il coordinatore della sicurezza in fase di esecuzione (CSE)</label>
+    <input type="text" id="w-cse-firma" value="${esc(v.cse)}">
+    ${signatureBlock('cse', v.firmaCSEImg||null, 'CSE')}
   </section>`;
 }
 
@@ -2587,10 +3840,104 @@ function viewAnteprima(){
   </div>`;
 }
 
+/* Anteprima del verbale di riunione iniziale — analoga a viewAnteprima() ma con le sezioni proprie
+   del verbale di riunione (luogo/orari, ordine del giorno, verifiche CSE, RLS, note) al posto di
+   fasi/osservanze/sospensione/preposti; validateVerbale() resta la stessa per entrambi i tipi. */
+function viewAnteprimaRiunione(){
+  const v = CURRENT_VERBALE;
+  const errs = validateVerbale(v);
+  const impreseList = v.impreseCoinvolte.map(i=>`${esc(i.nome)} (${ruoliOf(i).join(', ')})${i.presente===false ? ' — non presente a questa riunione' : (i.referenteNome?' — referente: '+esc(i.referenteNome):'')}`).join(', ') || '—';
+  const presentiList = [...presentiPersonaleNomi(v), ...v.altriPresenti].join(', ') || '—';
+  const destNomi = DB.destinatari.filter(d=>v.destinatariSelezionati.includes(d.id)).map(d=>d.nome).join(', ') || '—';
+
+  return `
+  <div class="topbar"><button class="back" data-wizard-nav="destinatari">‹</button><h1>Anteprima verbale</h1></div>
+  <div class="content">
+    ${errs.length? `<div class="errlist"><div class="t">Da completare prima di generare:</div><ul>${errs.map(e=>`<li>${e}</li>`).join('')}</ul></div>`:''}
+
+    <div class="preview-sec">
+      <h4>Dati cantiere</h4>
+      <div class="kv"><div class="k">Cantiere</div><div class="v">${esc(v.cantiereNome)}</div></div>
+      <div class="kv"><div class="k">Verbale n°</div><div class="v">${v.numero}/${v.anno}</div></div>
+      <div class="kv"><div class="k">Data</div><div class="v">${fmtDate(v.data)}</div></div>
+      <button class="edit-link" data-wizard-nav="cantiere">Modifica →</button>
+    </div>
+
+    <div class="preview-sec">
+      <h4>Luogo e orari</h4>
+      <div class="kv"><div class="k">Luogo</div><div class="v">${v.luogoRiunione==='altro'?(esc(v.luogoAltro)||'—'):'In cantiere'}</div></div>
+      <div class="kv"><div class="k">Orario</div><div class="v">${v.oraInizio||'—'} - ${v.oraFine||'—'}</div></div>
+      <button class="edit-link" data-wizard-nav="incontro">Modifica →</button>
+    </div>
+
+    <div class="preview-sec">
+      <h4>Imprese e presenti</h4>
+      <div class="kv"><div class="k">Imprese</div><div class="v">${impreseList}</div></div>
+      <div class="kv"><div class="k">Presenti</div><div class="v">${presentiList}</div></div>
+      <button class="edit-link" data-wizard-nav="imprese">Modifica →</button>
+    </div>
+
+    <div class="preview-sec">
+      <h4>Ordine del giorno</h4>
+      <div class="kv"><div class="k">Variazioni progettuali</div><div class="v">${v.ordineGiorno.variazioni.checked?'Trattato':'Non trattato'}</div></div>
+      <div class="kv"><div class="k">Verifica documentazione</div><div class="v">${v.ordineGiorno.verificaDoc.checked?'Trattato':'Non trattato'}</div></div>
+      <button class="edit-link" data-wizard-nav="ordinegiorno">Modifica →</button>
+    </div>
+
+    <div class="preview-sec">
+      <h4>Verifiche del CSE</h4>
+      <div class="kv"><div class="k">POS / PSC / organizzazione</div><div class="v">${['pos','art102','organizzazione'].filter(k=>v.verifiche[k].checked).length}/3 trattati</div></div>
+      <button class="edit-link" data-wizard-nav="verifiche">Modifica →</button>
+    </div>
+
+    <div class="preview-sec">
+      <h4>Rappresentanti per la sicurezza</h4>
+      <div class="kv"><div class="k">Invitati</div><div class="v">${v.rls.filter(r=>r.checked).length}/${v.rls.length}</div></div>
+      <button class="edit-link" data-wizard-nav="rls">Modifica →</button>
+    </div>
+
+    <div class="preview-sec">
+      <h4>Note e prossima riunione</h4>
+      <div class="kv"><div class="k">Prossima riunione</div><div class="v">${esc(v.prossimaRiunione)||'—'}</div></div>
+      <button class="edit-link" data-wizard-nav="note">Modifica →</button>
+    </div>
+
+    <div class="preview-sec">
+      <h4>Firma</h4>
+      <div class="kv"><div class="k">CSE</div><div class="v">${esc(v.cse)||'—'}</div></div>
+      <button class="edit-link" data-wizard-nav="firme">Modifica →</button>
+    </div>
+
+    <div class="preview-sec">
+      <h4>Destinatari</h4>
+      <div class="kv"><div class="k">Invio a</div><div class="v">${destNomi}</div></div>
+      <button class="edit-link" data-wizard-nav="destinatari">Modifica →</button>
+    </div>
+
+    <div class="btn-row">
+      <button class="btn secondary" data-save-bozza="1">Salva bozza</button>
+      <button class="btn" data-genera="1" ${errs.length?'disabled':''}>Genera verbale ›</button>
+    </div>
+  </div>`;
+}
+
 /* ======================= DOCUMENTO STAMPABILE ======================= */
 function totalHours(v){
   if(!v.oraArrivoCantiere || !v.oraRedazione) return '';
   const [h1,m1]=v.oraArrivoCantiere.split(':').map(Number);
+  const [h2,m2]=v.oraRedazione.split(':').map(Number);
+  let mins = (h2*60+m2)-(h1*60+m1);
+  if(mins<0) mins+=24*60;
+  const h = Math.floor(mins/60), m = mins%60;
+  return `${h}h${m?': '+m+'m':''}`;
+}
+// Come totalHours(), ma per il verbale di riunione: le "ore complessive" (dall'inizio della riunione
+// all'ora di redazione del verbale) non si chiedono piu' come valore libero al CSE (richiesta
+// 23/09/2026, "le deve stimare in autonomia come fa nei verbali di sopralluogo"), ma si calcolano
+// automaticamente allo stesso modo di totalHours().
+function totalHoursRiunione(v){
+  if(!v.oraInizio || !v.oraRedazione) return '';
+  const [h1,m1]=v.oraInizio.split(':').map(Number);
   const [h2,m2]=v.oraRedazione.split(':').map(Number);
   let mins = (h2*60+m2)-(h1*60+m1);
   if(mins<0) mins+=24*60;
@@ -2611,15 +3958,17 @@ function cantiereCoverLabel(v){
   return [cittaProv, sito].filter(Boolean).join(' - ');
 }
 function docFileBaseName(v){
-  return `Verbale_n${v.numero}-${v.anno}_${(v.cantiereNome||'cantiere').replace(/[^a-z0-9]+/gi,'_')}`;
+  const prefix = v.tipo==='riunione' ? 'VerbaleRiunione' : 'Verbale';
+  return `${prefix}_n${v.numero}-${v.anno}_${(v.cantiereNome||'cantiere').replace(/[^a-z0-9]+/gi,'_')}`;
 }
 
-function docFooter(n, total){
-  return `<div class="doc-footer"><div class="l">${DOC_ITG_CODE}<br>${DOC_ALLEGATO_CODE}</div><div class="r">Pagina ${n} di ${total}</div></div>`;
+function docFooter(n, total, allegatoCode){
+  return `<div class="doc-footer"><div class="l">${DOC_ITG_CODE}<br>${allegatoCode||DOC_ALLEGATO_CODE}</div><div class="r">Pagina ${n} di ${total}</div></div>`;
 }
 
 function viewDocumento(){
   const v = CURRENT_VERBALE;
+  if(v.tipo==='riunione') return viewDocumentoRiunione();
 
   let pageNo = 0;
   const totalPages = v.osservanze.length * 3 + 3; // cover + visita + N imprese × (NOTE + OSSERVANZE + PRESCRIZIONI) + (sospensione+firme/distribuzione insieme)
@@ -2758,7 +4107,6 @@ function viewDocumento(){
 
   const invioHtml = chkInline(v.modalitaInvio.email,'e-mail') + chkInline(v.modalitaInvio.fax,'via fax') + chkInline(v.modalitaInvio.brevimano,'via WhatsApp / app');
 
-  const docSigLine = (role, name, img) => `<div class="doc-sigline"><div class="role">${role}</div>${img?`<img class="sig-img" src="${img}">`:''}<div class="nameline"></div><div class="name">${esc(name)||' '}</div></div>`;
   const firmeHtml = `
     <div class="doc-signatures">
       ${docSigLine('Il coordinatore della sicurezza<br>in fase di esecuzione', v.cse, v.firmaCSEImg)}
@@ -2806,6 +4154,194 @@ function viewDocumento(){
   ${doc}
   `;
 }
+
+/* Documento stampabile del verbale di riunione iniziale di coordinamento (Allegato 8) — analogo a
+   viewDocumento() (Allegato 10) ma con 5 pagine fisse (dal 24/09/2026: "Verifiche del CSE" e
+   "Rappresentanti per la sicurezza" hanno ciascuna una pagina propria, prima condividevano la
+   stessa pagina 3 e il contenuto risultava troppo denso) invece della paginazione dinamica per
+   foto/osservanze (questo tipo di verbale non ha foto né osservanze per impresa). Il corposo testo
+   fisso a carattere legale/normativo del modello di riferimento è riportato qui come testo fisso —
+   vedi nota sopra wizIncontro() per la motivazione di questa scelta. */
+function viewDocumentoRiunione(){
+  const v = CURRENT_VERBALE;
+  const totalPages = 5;
+  let pageNo = 0;
+  const nextPage = () => ++pageNo;
+  const foot = (n) => docFooter(n, totalPages, DOC_ALLEGATO_CODE_RIUNIONE);
+
+  /* ---- pagina 1: copertina ---- */
+  const coverPage = `
+  <div class="doc-page">
+    ${docLogoImg()}
+    <div class="doc-cover-wrap">
+      <div class="doc-cover-title">
+        <div class="l1">Allegato ${esc(DOC_ALLEGATO_NUM_RIUNIONE)}</div>
+        <div class="l2">VERBALE RIUNIONE INIZIALE DI COORDINAMENTO</div>
+      </div>
+      <div class="doc-cover-box">${esc([v.tipologiaLavoro, cantiereCoverLabel(v)].filter(Boolean).join(' ').toUpperCase())}</div>
+    </div>
+    ${foot(nextPage())}
+  </div>`;
+
+  /* ---- pagina 2: dati riunione, imprese/referenti, presenti, ordine del giorno ---- */
+  const [dY,dM,dD] = (v.data||'').split('-');
+  const riunioneFieldsHtml = `
+    ${chkInline(true,'del')}
+    <span class="doc-u">${esc(dD||'—')}</span> / <span class="doc-u">${esc(dM||'—')}</span> / <span class="doc-u">${esc(dY||'—')}</span>
+    <b style="margin-left:14px;">n°</b>
+    <span class="doc-u">${esc(String(v.numero))}</span> / <span class="doc-u">${esc(String(v.anno))}</span>
+    <span style="margin-left:14px;">${chkInline(v.luogoRiunione==='cantiere','In cantiere')}${chkInline(v.luogoRiunione==='altro', 'Altro: '+(esc(v.luogoAltro)||'—'))}</span>`;
+
+  const attivitaTable = `
+  <table class="doc-attivita">
+    <tr class="bar-row"><td colspan="3">RIUNIONE INIZIALE DI COORDINAMENTO SICUREZZA</td></tr>
+    <tr><td>Inizio riunione</td><td class="h">h</td><td class="v">${v.oraInizio||'—'}</td></tr>
+    <tr><td>Fine riunione</td><td class="h">h</td><td class="v">${v.oraFine||'—'}</td></tr>
+    <tr><td>In data ${fmtDate(v.dataRedazione)}: redazione verbale di riunione</td><td class="h">h</td><td class="v">${v.oraRedazione||'—'}</td></tr>
+    <tr class="tot"><td>Per complessive</td><td class="h">h</td><td class="v">${totalHoursRiunione(v)||'—'}</td></tr>
+  </table>`;
+
+  const commRlHtml = `<div class="doc-cols2-plain">
+    <div><b>Committente:</b> <span class="doc-u">${esc(v.committente)||'—'}</span></div>
+    <div><b>Responsabile Lavori:</b> <span class="doc-u">${esc(v.responsabileLavori)||'—'}</span></div>
+  </div>`;
+
+  const impreseChkHtml = impresaFixedRows(v.impreseCoinvolte);
+  const referentiHtml = impresaReferentiRows(v.impreseCoinvolte);
+  const presentiListHtml = presentiColonneHtml(presentiNumeratiItems(v));
+  const presentiBoxHtml = `<div class="doc-box" style="font-size:12px;line-height:1.5;"><b>Sono presenti (indicare i nominativi con le rispettive mansioni e chi rappresentano)</b><br>${presentiListHtml||'—'}<br><br><b>il CSE</b> <span class="doc-u">${esc(v.cse)||'—'}</span></div>`;
+
+  const og = v.ordineGiorno;
+  const ordineGiornoHtml = `
+    <div class="doc-bar">Ordine del giorno</div>
+    <div style="font-size:12px;margin-bottom:8px;">La riunione è stata convocata dal Coordinatore in fase di esecuzione (CSE) per discutere il seguente ordine del giorno:</div>
+    <div class="doc-box">
+      ${chkRow(og.variazioni.checked, 'Verifica di eventuali variazioni progettuali:')}
+      <div style="font-size:12px;margin:4px 0 10px 24px;white-space:pre-wrap;">${esc(variazioniTestoCompleto(v))||'—'}</div>
+      ${chkRow(og.verificaDoc.checked, 'Verifica della documentazione consegnata da:')}
+      <div class="doc-chk-list" style="margin-left:24px;">
+        ${chkRow(!!og.verificaDoc.affidataria, `impresa affidataria: <span class="doc-u">${esc(og.verificaDoc.affidataria)||'—'}</span>`)}
+        ${chkRow(!!og.verificaDoc.subappalto, `imprese in subappalto: <span class="doc-u">${esc(og.verificaDoc.subappalto)||'—'}</span>`)}
+        ${chkRow(!!og.verificaDoc.autonomi, `Lavoratori Autonomi: <span class="doc-u">${esc(og.verificaDoc.autonomi)||'—'}</span>`)}
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin:6px 0 0 24px;">in riferimento a quanto richiesto dal D.Lgs n° 81/2008 e di sola pertinenza del CSE.</div>
+    </div>`;
+
+  const page2 = `
+  <div class="doc-page">
+    ${docLogoImg()}
+    <div class="doc-visita-wrap">
+      <div class="doc-visita-tag">RIUNIONE INIZIALE DI COORDINAMENTO</div>
+      <div class="doc-visita-fields">${riunioneFieldsHtml}</div>
+    </div>
+    <div class="doc-box-line"><b>Cantiere di:</b> <span class="doc-u">${esc(cantiereCittaProv(v))}</span> &nbsp;&nbsp; <b>Sito in:</b> <span class="doc-u">${esc(v.sito)}</span></div>
+    ${attivitaTable}
+    <div class="doc-box">
+      ${commRlHtml}
+      <div class="doc-chk-list" style="margin:0;">${impreseChkHtml}</div>
+      <div style="font-weight:bold;font-size:12px;margin:10px 0 2px;">CON:</div>
+      <div class="doc-chk-list" style="margin:0;">${referentiHtml}</div>
+    </div>
+    ${presentiBoxHtml}
+    ${ordineGiornoHtml}
+    ${foot(nextPage())}
+  </div>`;
+
+  /* ---- pagina 3: verifiche del CSE (pagina dedicata: il contenuto, con le tre voci POS/art.102/
+     organizzazione e i relativi testi, è troppo lungo per stare insieme a RLS/RLST sulla stessa
+     pagina — vedi PDF annotato dall'utente 24/09/2026, verbale Borgolavezzaro n.2) ---- */
+  const ve = v.verifiche;
+  const verificheHtml = `
+    <div class="doc-bar">Verifiche di competenza del CSE</div>
+    <div class="doc-box">
+      ${chkRow(ve.pos.checked, 'Eventuali comunicazioni e prescrizioni relative al Piano Operativo di Sicurezza (POS) delle Imprese esecutrici:')}
+      <div style="font-size:12px;margin:4px 0 10px 24px;white-space:pre-wrap;">${esc(verificaTestoCompleto(v,'pos'))||'—'}</div>
+      ${chkRow(ve.art102.checked, "Verifica delle disposizioni previste nel PSC per dare attuazione all'art. 102 comma 1 (consultazione dei rappresentanti per la sicurezza):")}
+      <div style="font-size:12px;margin:4px 0 10px 24px;white-space:pre-wrap;">${esc(verificaTestoCompleto(v,'art102'))||'—'}</div>
+      ${chkRow(ve.organizzazione.checked, "Indicazioni sull'organizzazione tra i datori di lavoro, ivi compresi i lavoratori autonomi, sulla cooperazione ed il coordinamento delle attività, nonché la loro reciproca informazione:")}
+      <div style="font-size:12px;margin:4px 0 0 24px;white-space:pre-wrap;">${esc(verificaTestoCompleto(v,'organizzazione'))||'—'}</div>
+    </div>`;
+
+  const page3 = `
+  <div class="doc-page">
+    ${docLogoImg()}
+    ${verificheHtml}
+    ${foot(nextPage())}
+  </div>`;
+
+  /* ---- pagina 4: RLS/RLST, prossima riunione (spostata su una pagina propria) ---- */
+  const rlsRowsHtml = v.rls.map(r=>chkRow(r.checked, `${esc(rlsLabelConImpresa(r))} Sig. <span class="doc-u">${esc(r.nome)||'—'}</span>`)).join('');
+  const rlsHtml = `
+    <div class="doc-bar">Rappresentanti per la sicurezza invitati alla riunione</div>
+    <div class="doc-box">
+      <div class="doc-chk-list">${rlsRowsHtml}</div>
+      ${chkRow(v.rlsAssenti, "la verifica di cui sopra non ha potuto svolgersi per l'assenza dei rappresentanti della sicurezza invitati.")}
+      <div style="font-size:12px;margin-top:8px;">Considerazioni degli RLS: ${esc(v.rlsNote)||'—'}</div>
+    </div>
+    <div style="font-size:12px;line-height:1.4;margin:10px 0;">Il presente verbale di coordinamento costituisce variante integrativa al PSC e ai POS delle imprese interessate, oltre che assolvimento all'art. 92 comma 1 lett. c) ed e) del D.Lgs n° 81/2008 e s.m.i.</div>
+    <div class="doc-box-line"><b>Prossima riunione di coordinamento:</b> ${esc(v.prossimaRiunione)||'—'}</div>`;
+
+  const page4 = `
+  <div class="doc-page">
+    ${docLogoImg()}
+    ${rlsHtml}
+    ${foot(nextPage())}
+  </div>`;
+
+  /* ---- pagina 5: note del CSE, firma partecipanti, firma CSE, destinatari ---- */
+  const noteCseHtml = `
+    <div class="doc-bar">Note del CSE</div>
+    <div class="doc-box" style="min-height:120px;font-size:12px;white-space:pre-wrap;">${esc(noteCseTestoCompleto(v))||'—'}</div>`;
+
+  const partecipantiItems = presentiNumeratiItems(v);
+  const firmaPartecipantiHtml = `
+    <div style="font-size:12px;margin-top:14px;"><b>Firma dei partecipanti alla riunione — per presa visione:</b></div>
+    <div style="font-size:12px;line-height:1.8;margin-top:4px;">${partecipantiItems.length ? partecipantiItems.join('<br>') : '—'}</div>`;
+
+  const destRows = DB.destinatari.filter(d=>v.destinatariSelezionati.includes(d.id))
+    .map(d=>chkRow(true, `Sig. <span class="doc-u">${esc(d.nome)}</span>${d.ruolo?' - '+esc(d.ruolo):''}${d.email?' &nbsp; e-mail '+esc(d.email):''}`))
+    .join('') || `<div style="font-size:12px;color:var(--muted);">Nessun destinatario selezionato.</div>`;
+  const invioHtml = chkInline(v.modalitaInvio.email,'e-mail') + chkInline(v.modalitaInvio.fax,'via fax') + chkInline(v.modalitaInvio.brevimano,'via WhatsApp / app');
+
+  const page5 = `
+  <div class="doc-page">
+    ${docLogoImg()}
+    ${noteCseHtml}
+    ${firmaPartecipantiHtml}
+    <div class="doc-signatures">${docSigLine('Il coordinatore della sicurezza<br>in fase di esecuzione', v.cse, v.firmaCSEImg)}</div>
+    <div style="font-size:12px;margin-top:22px;">Il presente verbale è composto da <span class="doc-u">${totalPages}</span> pagine e viene inviato via ${invioHtml} a:</div>
+    <div class="doc-chk-list" style="margin-top:8px;">${destRows}</div>
+    <div class="doc-chk-list">${chkRow(v.rimaneCantiere, 'Rimane in cantiere a disposizione degli Enti di Vigilanza (in formato digitale)')}</div>
+    ${foot(nextPage())}
+  </div>`;
+
+  const doc = `
+  <div id="docview">
+    ${coverPage}
+    ${page2}
+    ${page3}
+    ${page4}
+    ${page5}
+  </div>`;
+
+  return `
+  <div class="topbar no-print"><button class="back" data-go="anteprima">‹</button><h1>Verbale generato</h1></div>
+  <div class="content no-print">
+    <div class="preview-sec">
+      <p style="margin:0 0 10px;font-size:13px;">Il verbale è pronto. Scarica il PDF pronto da firmare, oppure il file Word se devi ancora modificarlo.</p>
+      <div class="btn-row">
+        <button class="btn" data-download-pdf="1">⬇️ Scarica PDF</button>
+        <button class="btn secondary" data-download-word="1">⬇️ Scarica Word</button>
+      </div>
+      <div class="btn-row">
+        <button class="btn ghost" data-print="1">🖨️ Stampa</button>
+        <button class="btn ghost" data-go="archivio">Vai all'archivio</button>
+      </div>
+    </div>
+  </div>
+  ${doc}
+  `;
+}
 /* ======================= HELPERS ======================= */
 function emptyState(ico,title,sub){
   return `<div class="empty"><div class="ico">${ico}</div><p><b>${title}</b><br>${sub}</p></div>`;
@@ -2828,6 +4364,41 @@ function resizeImage(file, cb){
       const ctx = canvas.getContext('2d');
       ctx.drawImage(img,0,0,canvas.width,canvas.height);
       cb(canvas.toDataURL('image/jpeg',0.72));
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+/* Come resizeImage(), ma per le firme caricate da una foto/immagine (non per gli altri tipi di
+   foto dell'app): esporta in PNG invece che JPEG, cosi' l'immagine mantiene un canale alpha, e
+   rimuove automaticamente lo sfondo chiaro — ogni pixel diventa tanto piu' trasparente quanto piu'
+   e' chiaro (vicino al bianco della carta), mantenendo il colore originale dell'inchiostro sul
+   tratto della firma. Cosi' una firma fotografata su un foglio bianco si sovrappone bene al
+   documento (e si puo' scaricare come PNG senza sfondo) invece di portarsi dietro un riquadro
+   bianco — richiesta 24/09/2026, commento sull'Artifact ("permetti di esportare le firme in png
+   senza sfondo"). Le firme disegnate col dito/mouse (vedi salvataggio in attachHandlers(),
+   data-sig-save) sono gia' PNG con sfondo trasparente di per se': il canvas di disegno parte
+   trasparente e vengono salvati solo i tratti disegnati, quindi non serve alcuna elaborazione. */
+function processFirmaImage(file, cb){
+  const reader = new FileReader();
+  reader.onload = e=>{
+    const img = new Image();
+    img.onload = ()=>{
+      const maxW = 900;
+      const scale = Math.min(1, maxW/img.width);
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width*scale; canvas.height = img.height*scale;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img,0,0,canvas.width,canvas.height);
+      const imgData = ctx.getImageData(0,0,canvas.width,canvas.height);
+      const d = imgData.data;
+      for(let i=0;i<d.length;i+=4){
+        const luma = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
+        d[i+3] = Math.round(d[i+3] * (255-luma) / 255);
+      }
+      ctx.putImageData(imgData, 0, 0);
+      cb(canvas.toDataURL('image/png'));
     };
     img.src = e.target.result;
   };
@@ -2979,6 +4550,7 @@ async function downloadPDF(){
 
 /* ---- Word (.doc, HTML-based, editable in Word) export ---- */
 function buildWordHTML(v){
+  if(v.tipo==='riunione') return buildWordHTMLRiunione(v);
   const NAVY=DOC_NAVY, LINE='#d7dee6', BLUEBG='#eaf3fb';
   const pageStyle='mso-page-break-before:always;';
   const box = () => `border:1px solid #000;padding:10px 12px;margin-bottom:10px;`;
@@ -3175,6 +4747,171 @@ function buildWordHTML(v){
   </style>
   </head><body>${footerDiv}<div class="Section1">${page1}${page2}${ossPages}${suspAndFirmeBlock}</div></body></html>`;
 }
+
+/* Word (.doc) del verbale di riunione iniziale (Allegato 8) — stessa tecnica di buildWordHTML() sopra
+   (tabelle/stili inline compatibili Word, footer ripetuto via mso-element:footer), 4 pagine fisse
+   invece della paginazione per foto/osservanze, che questo tipo di verbale non ha. */
+function buildWordHTMLRiunione(v){
+  const NAVY=DOC_NAVY, LINE='#d7dee6';
+  const pageStyle='mso-page-break-before:always;';
+  const box = () => `border:1px solid #000;padding:10px 12px;margin-bottom:10px;`;
+  const bar = (bg=NAVY) => `background:${bg};color:#fff;font-weight:bold;padding:7px 12px;margin:12px 0 10px;font-family:Arial,sans-serif;font-size:15px;`;
+  const u = () => `border-bottom:1px solid #000;padding:0 4px;font-weight:bold;color:${NAVY};`;
+  const totalPages = 5;
+  const logoImg = ()=>`<img src="${DOC_LOGO_SRC}" width="208" height="88" alt="Italgas Reti" style="display:block;margin:-55pt 0 14px -26pt;">`;
+  const chk = (on,label)=>`<table style="margin:2px 0;"><tr>
+      <td style="width:15px;font-size:13px;text-align:center;line-height:13px;font-family:Arial,sans-serif;">${on?'☒':'☐'}</td>
+      <td style="padding-left:6px;font-size:12px;font-family:Arial,sans-serif;">${label}</td>
+    </tr></table>`;
+  const chkInline = (on,label)=>`<span style="display:inline-block;margin-right:16px;font-size:12px;font-family:Arial,sans-serif;">
+      <span style="display:inline-block;font-size:13px;">${on?'☒':'☐'}</span> ${label}</span>`;
+  const impresaFixedRowsWord = (imprese, selectedImpresaId) => IMPRESA_RUOLI.map(ruolo=>{
+    const inRuolo = imprese.filter(ic=>ruoliOf(ic).includes(ruolo));
+    const on = selectedImpresaId!=null ? inRuolo.some(ic=>ic.impresaId===selectedImpresaId) : inRuolo.length>0;
+    const label = inRuolo.length
+      ? `<b>${esc(ruolo)}:</b> <span style="${u()}">${esc(inRuolo.map(ic=>ic.nome).join(', '))}</span>`
+      : `<b>${esc(ruolo)}:</b>`;
+    return chk(on, label);
+  }).join('');
+  const referentiRowsWord = (imprese) => IMPRESA_RUOLI.map(ruolo=>{
+    const inRuolo = imprese.filter(ic=>ruoliOf(ic).includes(ruolo));
+    if(!inRuolo.length) return chk(false, `<b>${esc(ruolo)}:</b>`);
+    return inRuolo.map(ic=>{
+      const label = ic.presente===false
+        ? `<b>${esc(ruolo)}:</b> <span style="${u()}">${esc(ic.nome)}</span> (non presente a questa riunione)`
+        : `<b>${esc(ruolo)}:</b> <span style="${u()}">${esc(ic.nome)}</span> nella persona di <span style="${u()}">${esc(ic.referenteNome)||'—'}</span> avente mansioni di <span style="${u()}">${esc(ic.referenteMansione)||'—'}</span>`;
+      return chk(true, label);
+    }).join('');
+  }).join('');
+  const sigLine = (role,name,img)=>`<table width="100%" style="margin-top:22px;"><tr><td align="right">
+    <span style="font-size:12px;color:#333;">${esc(role)}</span><br>
+    ${img?`<img src="${img}" style="max-height:50px;max-width:220px;display:block;margin:4px 0 -6px auto;"><br>`:''}
+    <span style="display:inline-block;min-width:220px;border-bottom:1px solid #000;height:24px;"></span><br>
+    <span style="font-size:12px;font-weight:bold;color:${NAVY};">${esc(name)||'&nbsp;'}</span></td></tr></table>`;
+
+  /* ---- pagina 1: copertina ---- */
+  const COVER_FONT="'Gill Sans MT',Corbel,Calibri,Arial,sans-serif", COVER_BLUE='#007AC9';
+  const page1 = `<div style="font-family:Arial,sans-serif;font-size:12px;">
+    ${logoImg()}
+    <div style="text-align:center;margin-top:50px;">
+      <div style="color:${COVER_BLUE};font-family:${COVER_FONT};font-weight:bold;font-size:15px;">Allegato ${esc(DOC_ALLEGATO_NUM_RIUNIONE)}</div>
+      <div style="color:${COVER_BLUE};font-family:${COVER_FONT};font-weight:bold;font-size:15px;text-transform:uppercase;margin:8px auto 22px;max-width:480px;line-height:1.4;">VERBALE RIUNIONE INIZIALE DI COORDINAMENTO</div>
+      <div style="display:inline-block;border:1px solid ${COVER_BLUE};padding:10px 18px;color:${COVER_BLUE};font-family:${COVER_FONT};font-weight:bold;font-size:15px;">${esc([v.tipologiaLavoro, cantiereCoverLabel(v)].filter(Boolean).join(' ').toUpperCase())}</div>
+    </div>
+  </div>`;
+
+  /* ---- pagina 2: dati riunione, imprese/referenti, presenti, ordine del giorno ---- */
+  const [dY,dM,dD] = (v.data||'').split('-');
+  const presentiCols = presentiColonneHtmlWord(presentiNumeratiItems(v));
+  const og = v.ordineGiorno;
+  const page2 = `<div style="${pageStyle}font-family:Arial,sans-serif;font-size:12px;">
+    ${logoImg()}
+    <table width="100%" style="border:1px solid #000;border-collapse:collapse;margin-bottom:12px;"><tr>
+      <td style="background:${NAVY};color:#fff;font-weight:800;font-style:italic;font-size:15px;padding:10px 20px;">RIUNIONE INIZIALE DI COORDINAMENTO</td>
+      <td style="padding:10px 14px;font-size:12px;">
+        ${chkInline(true,'del')} <span style="${u()}">${esc(dD||'—')}</span> / <span style="${u()}">${esc(dM||'—')}</span> / <span style="${u()}">${esc(dY||'—')}</span>
+        &nbsp;&nbsp;<b>n°</b> <span style="${u()}">${esc(String(v.numero))}</span> / <span style="${u()}">${esc(String(v.anno))}</span>
+        &nbsp;&nbsp;${chkInline(v.luogoRiunione==='cantiere','In cantiere')}${chkInline(v.luogoRiunione==='altro', 'Altro: '+(esc(v.luogoAltro)||'—'))}
+      </td>
+    </tr></table>
+    <div style="font-size:12px;margin-bottom:10px;border:1px solid #000;padding:8px 10px;"><b>Cantiere di:</b> <span style="${u()}">${esc(cantiereCittaProv(v))}</span> &nbsp;&nbsp; <b>Sito in:</b> <span style="${u()}">${esc(v.sito)}</span></div>
+    <table width="100%" style="border-collapse:collapse;border:1px solid #000;margin-bottom:6px;">
+      <tr><td colspan="3" style="background:${NAVY};color:#fff;font-weight:bold;padding:3px 10px;font-size:15px;">RIUNIONE INIZIALE DI COORDINAMENTO SICUREZZA</td></tr>
+      <tr><td style="border:1px solid #000;padding:1.5px 9px;font-size:12px;width:70%;">Inizio riunione</td><td style="border:1px solid #000;padding:1.5px 9px;font-size:12px;text-align:center;">h</td><td style="border:1px solid #000;padding:1.5px 9px;font-size:12px;text-align:center;">${v.oraInizio||'—'}</td></tr>
+      <tr><td style="border:1px solid #000;padding:1.5px 9px;font-size:12px;">Fine riunione</td><td style="border:1px solid #000;padding:1.5px 9px;font-size:12px;text-align:center;">h</td><td style="border:1px solid #000;padding:1.5px 9px;font-size:12px;text-align:center;">${v.oraFine||'—'}</td></tr>
+      <tr><td style="border:1px solid #000;padding:1.5px 9px;font-size:12px;">In data ${fmtDate(v.dataRedazione)}: redazione verbale di riunione</td><td style="border:1px solid #000;padding:1.5px 9px;font-size:12px;text-align:center;">h</td><td style="border:1px solid #000;padding:1.5px 9px;font-size:12px;text-align:center;">${v.oraRedazione||'—'}</td></tr>
+      <tr><td style="border:1px solid #000;padding:1.5px 9px;font-size:12px;font-weight:bold;">Per complessive</td><td style="border:1px solid #000;padding:1.5px 9px;font-size:12px;text-align:center;">h</td><td style="border:1px solid #000;padding:1.5px 9px;font-size:12px;text-align:center;">${totalHoursRiunione(v)||'—'}</td></tr>
+    </table>
+    <div style="${box()}">
+      <table width="100%" style="margin-bottom:6px;"><tr>
+        <td style="width:50%;font-size:12px;"><b>Committente:</b> <span style="${u()}">${esc(v.committente)||'—'}</span></td>
+        <td style="width:50%;font-size:12px;"><b>Responsabile Lavori:</b> <span style="${u()}">${esc(v.responsabileLavori)||'—'}</span></td>
+      </tr></table>
+      ${impresaFixedRowsWord(v.impreseCoinvolte)}
+      <p style="font-size:12px;font-weight:bold;margin:8px 0 2px;">CON:</p>
+      ${referentiRowsWord(v.impreseCoinvolte)}
+    </div>
+    <div style="font-size:12px;line-height:1.5;${box()}"><b>Sono presenti (indicare i nominativi con le rispettive mansioni e chi rappresentano)</b><br>${presentiCols||'—'}<br><br><b>il CSE</b> <span style="${u()}">${esc(v.cse)||'—'}</span></div>
+    <div style="${bar()}">Ordine del giorno</div>
+    <div style="font-size:12px;margin-bottom:8px;">La riunione è stata convocata dal Coordinatore in fase di esecuzione (CSE) per discutere il seguente ordine del giorno:</div>
+    <div style="${box()}">
+      ${chk(og.variazioni.checked, 'Verifica di eventuali variazioni progettuali:')}
+      <p style="font-size:12px;margin:4px 0 10px 24px;white-space:pre-wrap;">${esc(variazioniTestoCompleto(v))||'—'}</p>
+      ${chk(og.verificaDoc.checked, 'Verifica della documentazione consegnata da:')}
+      <div style="margin-left:24px;">
+        ${chk(!!og.verificaDoc.affidataria, `impresa affidataria: <span style="${u()}">${esc(og.verificaDoc.affidataria)||'—'}</span>`)}
+        ${chk(!!og.verificaDoc.subappalto, `imprese in subappalto: <span style="${u()}">${esc(og.verificaDoc.subappalto)||'—'}</span>`)}
+        ${chk(!!og.verificaDoc.autonomi, `Lavoratori Autonomi: <span style="${u()}">${esc(og.verificaDoc.autonomi)||'—'}</span>`)}
+      </div>
+      <p style="font-size:11px;color:#5b6b7c;margin:6px 0 0 24px;">in riferimento a quanto richiesto dal D.Lgs n° 81/2008 e di sola pertinenza del CSE.</p>
+    </div>
+  </div>`;
+
+  /* ---- pagina 3: verifiche del CSE (pagina dedicata dal 24/09/2026, vedi nota sopra
+     viewDocumentoRiunione — non più condivisa con RLS/RLST sulla stessa pagina) ---- */
+  const ve = v.verifiche;
+  const page3 = `<div style="${pageStyle}font-family:Arial,sans-serif;font-size:12px;">
+    ${logoImg()}
+    <div style="${bar()}">Verifiche di competenza del CSE</div>
+    <div style="${box()}">
+      ${chk(ve.pos.checked, 'Eventuali comunicazioni e prescrizioni relative al Piano Operativo di Sicurezza (POS) delle Imprese esecutrici:')}
+      <p style="font-size:12px;margin:4px 0 10px 24px;white-space:pre-wrap;">${esc(verificaTestoCompleto(v,'pos'))||'—'}</p>
+      ${chk(ve.art102.checked, "Verifica delle disposizioni previste nel PSC per dare attuazione all'art. 102 comma 1 (consultazione dei rappresentanti per la sicurezza):")}
+      <p style="font-size:12px;margin:4px 0 10px 24px;white-space:pre-wrap;">${esc(verificaTestoCompleto(v,'art102'))||'—'}</p>
+      ${chk(ve.organizzazione.checked, "Indicazioni sull'organizzazione tra i datori di lavoro, ivi compresi i lavoratori autonomi, sulla cooperazione ed il coordinamento delle attività, nonché la loro reciproca informazione:")}
+      <p style="font-size:12px;margin:4px 0 0 24px;white-space:pre-wrap;">${esc(verificaTestoCompleto(v,'organizzazione'))||'—'}</p>
+    </div>
+  </div>`;
+
+  /* ---- pagina 4: RLS/RLST, prossima riunione (spostata su una pagina propria) ---- */
+  const rlsRowsWord = v.rls.map(r=>chk(r.checked, `${esc(rlsLabelConImpresa(r))} Sig. <span style="${u()}">${esc(r.nome)||'—'}</span>`)).join('');
+  const page4 = `<div style="${pageStyle}font-family:Arial,sans-serif;font-size:12px;">
+    ${logoImg()}
+    <div style="${bar()}">Rappresentanti per la sicurezza invitati alla riunione</div>
+    <div style="${box()}">
+      ${rlsRowsWord}
+      ${chk(v.rlsAssenti, "la verifica di cui sopra non ha potuto svolgersi per l'assenza dei rappresentanti della sicurezza invitati.")}
+      <p style="font-size:12px;margin-top:8px;">Considerazioni degli RLS: ${esc(v.rlsNote)||'—'}</p>
+    </div>
+    <p style="font-size:12px;line-height:1.4;margin:10px 0;">Il presente verbale di coordinamento costituisce variante integrativa al PSC e ai POS delle imprese interessate, oltre che assolvimento all'art. 92 comma 1 lett. c) ed e) del D.Lgs n° 81/2008 e s.m.i.</p>
+    <div style="font-size:12px;border:1px solid #000;padding:8px 10px;"><b>Prossima riunione di coordinamento:</b> ${esc(v.prossimaRiunione)||'—'}</div>
+  </div>`;
+
+  /* ---- pagina 5: note del CSE, firma partecipanti, firma CSE, destinatari ---- */
+  const partecipantiItems = presentiNumeratiItems(v);
+  const destinatariRows = DB.destinatari.filter(d=>v.destinatariSelezionati.includes(d.id))
+    .map(d=>chk(true, `Sig. <span style="${u()}">${esc(d.nome)}</span>${d.ruolo?' - '+esc(d.ruolo):''}${d.email?' &nbsp; e-mail '+esc(d.email):''}`)).join('') || '<p style="font-size:12px;color:#5b6b7c;">Nessun destinatario selezionato.</p>';
+  const invioHtml = chkInline(v.modalitaInvio.email,'e-mail') + chkInline(v.modalitaInvio.fax,'via fax') + chkInline(v.modalitaInvio.brevimano,'via WhatsApp / app');
+  const page5 = `<div style="${pageStyle}font-family:Arial,sans-serif;font-size:12px;">
+    ${logoImg()}
+    <div style="${bar()}">Note del CSE</div>
+    <div style="${box()}min-height:100px;white-space:pre-wrap;">${esc(noteCseTestoCompleto(v))||'—'}</div>
+    <p style="font-size:12px;margin-top:14px;"><b>Firma dei partecipanti alla riunione — per presa visione:</b></p>
+    <p style="font-size:12px;line-height:1.8;margin-top:4px;">${partecipantiItems.length ? partecipantiItems.join('<br>') : '—'}</p>
+    ${sigLine('Il coordinatore della sicurezza in fase di esecuzione', v.cse, v.firmaCSEImg)}
+    <p style="font-size:12px;margin-top:22px;">Il presente verbale è composto da <span style="${u()}">${totalPages}</span> pagine e viene inviato via ${invioHtml} a:</p>
+    ${destinatariRows}
+    ${chk(v.rimaneCantiere, 'Rimane in cantiere a disposizione degli Enti di Vigilanza (in formato digitale)')}
+  </div>`;
+
+  const mkField = (code, fallback) => `<!--[if supportFields]><span style='mso-element:field-begin'></span><span style='mso-spacerun:yes'>&nbsp;</span>${code}<span style='mso-element:field-separator'></span><![endif]-->${fallback}<!--[if supportFields]><span style='mso-element:field-end'></span><![endif]-->`;
+  const footerDiv = `<div style='mso-element:footer;' id="f1">
+    <table width="100%" style="border-collapse:collapse;margin:0;"><tr>
+      <td style="border-top:1px solid ${LINE};padding-top:4pt;font-family:'Gill Sans MT',Corbel,Arial,sans-serif;font-size:9pt;color:#000;">${DOC_ITG_CODE}<br>${DOC_ALLEGATO_CODE_RIUNIONE}</td>
+      <td align="right" style="border-top:1px solid ${LINE};padding-top:4pt;font-family:'Gill Sans MT',Corbel,Arial,sans-serif;font-size:9pt;color:#000;vertical-align:bottom;">Pagina ${mkField('PAGE','1')} di ${mkField('NUMPAGES', String(totalPages))}</td>
+    </tr></table>
+  </div>`;
+
+  return `<!DOCTYPE html><html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
+  <head><meta charset="utf-8"><title>${esc(docFileBaseName(v))}</title>
+  <!--[if gte mso 9]><xml><w:WordDocument><w:View>Print</w:View><w:Zoom>100</w:Zoom></w:WordDocument></xml><![endif]-->
+  <style>
+    @page Section1 {size:595.3pt 841.9pt;margin:72pt 56.2pt 14pt 46pt;mso-header-margin:36pt;mso-footer-margin:14pt;mso-footer:f1;mso-paper-source:0;}
+    div.Section1 {page:Section1;}
+  </style>
+  </head><body>${footerDiv}<div class="Section1">${page1}${page2}${page3}${page4}${page5}</div></body></html>`;
+}
+
 function downloadWord(){
   showSpinner('Genero il file Word…');
   try{
@@ -3190,6 +4927,23 @@ function downloadWord(){
   finally{ hideSpinner(); }
 }
 
+/* ---- scarica una firma salvata (disegnata o caricata da foto) come file PNG a se' stante, per
+   poterla riutilizzare fuori dall'app — richiesta 24/09/2026, commento sull'Artifact ("permetti di
+   esportare le firme in png senza sfondo"). Le firme disegnate sono gia' PNG con sfondo trasparente;
+   quelle caricate da foto vengono elaborate da processFirmaImage() (vedi sopra, presso
+   resizeImage()) per rimuovere lo sfondo chiaro prima di essere salvate nel verbale. ---- */
+async function downloadFirmaPng(dataUrl, filenameBase){
+  try{
+    const blob = await (await fetch(dataUrl)).blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filenameBase + '.png';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url), 2000);
+    toast('Firma scaricata');
+  }catch(e){ console.error(e); toast('Errore nel download della firma.'); }
+}
+
 /* ======================= EVENT HANDLERS ======================= */
 function attachHandlers(){
   const app = document.getElementById('app');
@@ -3197,8 +4951,20 @@ function attachHandlers(){
   app.querySelectorAll('[data-go]').forEach(el=>el.addEventListener('click', async ()=>{
     const g = el.dataset.go;
     if(g==='new-verbale'){
-      if(DB.cantieri.length===0){ toast('Crea prima un cantiere.'); go({name:'cantieri'}); return; }
-      CURRENT_VERBALE = blankVerbale(DB.cantieri[0]);
+      const cantieriAttivi = DB.cantieri.filter(c=>!c.completato);
+      if(cantieriAttivi.length===0){
+        toast(DB.cantieri.length===0 ? 'Crea prima un cantiere.' : 'Tutti i cantieri sono completati: riattivane uno o creane uno nuovo.');
+        go({name:'cantieri'}); return;
+      }
+      CURRENT_VERBALE = blankVerbale(cantieriAttivi[0]);
+      go({name:'wizard', step:'cantiere'});
+    } else if(g==='new-verbale-riunione'){
+      const cantieriAttivi = DB.cantieri.filter(c=>!c.completato);
+      if(cantieriAttivi.length===0){
+        toast(DB.cantieri.length===0 ? 'Crea prima un cantiere.' : 'Tutti i cantieri sono completati: riattivane uno o creane uno nuovo.');
+        go({name:'cantieri'}); return;
+      }
+      CURRENT_VERBALE = blankVerbaleRiunione(cantieriAttivi[0]);
       go({name:'wizard', step:'cantiere'});
     } else if(g==='cantiere-edit-new'){ go({name:'cantiere-edit', id:null}); }
     else if(g==='impresa-edit-new'){ go({name:'impresa-edit', id:null}); }
@@ -3211,33 +4977,97 @@ function attachHandlers(){
   }));
 
   app.querySelectorAll('[data-edit-cantiere]').forEach(el=>el.addEventListener('click', ()=>go({name:'cantiere-edit', id:el.dataset.editCantiere})));
-  app.querySelectorAll('[data-del-cantiere]').forEach(el=>el.addEventListener('click', async ()=>{
-    if(!confirm('Eliminare questo cantiere?')) return;
-    DB.cantieri = DB.cantieri.filter(c=>c.id!==el.dataset.delCantiere);
-    await sset(KEYS.cantieri, DB.cantieri); render();
+  app.querySelectorAll('[data-del-cantiere]').forEach(el=>el.addEventListener('click', ()=>{
+    const id = el.dataset.delCantiere;
+    const c = DB.cantieri.find(x=>x.id===id);
+    confirmEliminaConTesto(`Eliminare il cantiere "${c?c.nome:''}"? Resterà nel Cestino per ${CESTINO_GIORNI_RITENZIONE} giorni, poi verrà rimosso per sempre.`, async ()=>{
+      if(c) await spostaInCestino('cantiere', c.nome, c.sito||'', c);
+      DB.cantieri = DB.cantieri.filter(x=>x.id!==id);
+      await sset(KEYS.cantieri, DB.cantieri); toast('Cantiere spostato nel Cestino'); render();
+    });
+  }));
+  // Cantieri completati (richiesta 23/09/2026): sposta il cantiere fuori/dentro l'elenco attivo senza
+  // eliminarlo — resta nei dati (verbali già fatti, esportazioni, filtro dell'archivio verbali) ma
+  // esce dal menù di scelta cantiere per un nuovo verbale. Il pulsante ✅ dall'elenco attivo chiede
+  // ora di digitare "confermato" (richiesta 23/09/2026, "anche qua serve la conferma con scritto
+  // 'confermato'"), per evitare tocchi accidentali su un'icona in mezzo all'elenco; resta invece un
+  // singolo tocco, senza conferma, la riattivazione (↩️) e il pulsante nella scheda di modifica.
+  app.querySelectorAll('[data-complete-cantiere]').forEach(el=>el.addEventListener('click', ()=>{
+    const c = DB.cantieri.find(x=>x.id===el.dataset.completeCantiere);
+    if(!c) return;
+    confirmConParola(`Segnare il cantiere "${c.nome}" come completato? Uscirà dall'elenco attivo e non sarà più selezionabile per nuovi verbali (resterà comunque riattivabile in qualsiasi momento da "Cantieri completati").`, 'confermato', async ()=>{
+      c.completato = true; c.completatoIl = todayISO();
+      await sset(KEYS.cantieri, DB.cantieri); toast('Cantiere segnato come completato'); render();
+    }, {labelBtn:'Conferma', btnClass:'btn'});
+  }));
+  app.querySelectorAll('[data-reactivate-cantiere]').forEach(el=>el.addEventListener('click', async ()=>{
+    const c = DB.cantieri.find(x=>x.id===el.dataset.reactivateCantiere);
+    if(!c) return;
+    c.completato = false; c.completatoIl = null;
+    await sset(KEYS.cantieri, DB.cantieri); toast('Cantiere riattivato'); render();
+  }));
+  const toggleCompletatoBtn = app.querySelector('[data-toggle-completato-cantiere]');
+  if(toggleCompletatoBtn) toggleCompletatoBtn.addEventListener('click', async ()=>{
+    const c = DB.cantieri.find(x=>x.id===toggleCompletatoBtn.dataset.toggleCompletatoCantiere);
+    if(!c) return;
+    c.completato = !c.completato; c.completatoIl = c.completato ? todayISO() : null;
+    await sset(KEYS.cantieri, DB.cantieri);
+    toast(c.completato ? 'Cantiere segnato come completato' : 'Cantiere riattivato');
+    go({name: c.completato ? 'cantieriCompletati' : 'cantieri'});
+  });
+
+  // Cestino (richiesta 23/09/2026)
+  app.querySelectorAll('[data-restore-cestino]').forEach(el=>el.addEventListener('click', ()=>{
+    ripristinaDaCestino(el.dataset.restoreCestino);
+  }));
+  app.querySelectorAll('[data-del-cestino]').forEach(el=>el.addEventListener('click', ()=>{
+    const id = el.dataset.delCestino;
+    const voce = (DB.cestino||[]).find(e=>e.id===id);
+    confirmEliminaConTesto(`Eliminare definitivamente "${voce?voce.etichetta:''}"? Non sarà più possibile ripristinarlo.`, ()=>{
+      eliminaDefinitivamenteDaCestino(id);
+    });
   }));
   const saveCantiereBtn = app.querySelector('[data-save-cantiere]');
   if(saveCantiereBtn) saveCantiereBtn.addEventListener('click', async ()=>{
     const id = saveCantiereBtn.dataset.saveCantiere; const isNew = saveCantiereBtn.dataset.new==='true';
     const nome = document.getElementById('f-nome').value.trim();
     if(!nome){ toast('Inserisci il nome del cantiere'); return; }
+    // preservo lo stato completato/completatoIl: il form di modifica non lo mostra come campo
+    // (si gestisce solo dai pulsanti dedicati), quindi non va perso salvando gli altri campi.
+    const esistente = isNew ? null : DB.cantieri.find(x=>x.id===id);
     const obj = {id, nome, sito:document.getElementById('f-sito').value.trim(),
       committente:document.getElementById('f-committente').value.trim(),
       responsabileLavori:document.getElementById('f-rl').value.trim(),
       comune:document.getElementById('f-comune').value.trim(),
       provincia:provinciaSigla(document.getElementById('f-provincia').value),
-      tipologiaLavoro:document.getElementById('f-cantiere-tipologia').value.trim()};
+      tipologiaLavoro:document.getElementById('f-cantiere-tipologia').value.trim(),
+      completato: esistente ? !!esistente.completato : false,
+      completatoIl: esistente ? (esistente.completatoIl||null) : null};
     if(isNew) DB.cantieri.push(obj); else DB.cantieri[DB.cantieri.findIndex(c=>c.id===id)]=obj;
-    await sset(KEYS.cantieri, DB.cantieri); toast('Cantiere salvato'); go({name:'cantieri'});
+    await sset(KEYS.cantieri, DB.cantieri); toast('Cantiere salvato');
+    go({name: obj.completato ? 'cantieriCompletati' : 'cantieri'});
   });
 
   app.querySelectorAll('[data-edit-impresa]').forEach(el=>el.addEventListener('click', ()=>go({name:'impresa-edit', id:el.dataset.editImpresa})));
   app.querySelectorAll('[data-del-impresa]').forEach(el=>el.addEventListener('click', async ()=>{
-    if(!confirm('Eliminare questa impresa? Verranno rimossi anche i dipendenti collegati.')) return;
-    DB.imprese = DB.imprese.filter(c=>c.id!==el.dataset.delImpresa);
-    DB.personale = DB.personale.filter(p=>p.impresaId!==el.dataset.delImpresa);
-    await sset(KEYS.imprese, DB.imprese); await sset(KEYS.personale, DB.personale); render();
+    if(!confirm(`Eliminare questa impresa? Verranno spostati nel Cestino anche i dipendenti collegati (resteranno lì ${CESTINO_GIORNI_RITENZIONE} giorni).`)) return;
+    const impId = el.dataset.delImpresa;
+    const impresa = DB.imprese.find(x=>x.id===impId);
+    const personaleCollegato = DB.personale.filter(p=>p.impresaId===impId);
+    if(impresa) await spostaInCestino('impresa', impresa.nome, personaleCollegato.length?`${personaleCollegato.length} dipendenti collegati`:'', {impresa, personale:personaleCollegato});
+    DB.imprese = DB.imprese.filter(c=>c.id!==impId);
+    DB.personale = DB.personale.filter(p=>p.impresaId!==impId);
+    await sset(KEYS.imprese, DB.imprese); await sset(KEYS.personale, DB.personale);
+    toast('Impresa spostata nel Cestino'); render();
   }));
+  // Imprese: ricerca dal vivo + ordinamento + menù a tendina per iniziale (23/09/2026)
+  const impreseSearchEl = document.getElementById('imprese-search');
+  if(impreseSearchEl) impreseSearchEl.addEventListener('input', ()=>{ ROUTE.filtriImprese.search = impreseSearchEl.value; applyImpreseFiltro(); });
+  const impreseOrdineEl = document.getElementById('imprese-filter-ordine');
+  if(impreseOrdineEl) impreseOrdineEl.addEventListener('change', ()=>{ ROUTE.filtriImprese.ordine = impreseOrdineEl.value; render(); });
+  app.querySelectorAll('.pers-group[data-lettera]').forEach(el=>{
+    el.addEventListener('toggle', ()=>{ IMPRESE_LETTERA_OPEN[el.dataset.lettera] = el.open; });
+  });
   const saveImpresaBtn = app.querySelector('[data-save-impresa]');
   if(saveImpresaBtn) saveImpresaBtn.addEventListener('click', async ()=>{
     const id = saveImpresaBtn.dataset.saveImpresa; const isNew = saveImpresaBtn.dataset.new==='true';
@@ -3253,8 +5083,10 @@ function attachHandlers(){
   app.querySelectorAll('[data-edit-personale]').forEach(el=>el.addEventListener('click', ()=>go({name:'personale-edit', id:el.dataset.editPersonale})));
   app.querySelectorAll('[data-del-personale]').forEach(el=>el.addEventListener('click', async ()=>{
     if(!confirm('Eliminare questo dipendente?')) return;
-    DB.personale = DB.personale.filter(p=>p.id!==el.dataset.delPersonale);
-    await sset(KEYS.personale, DB.personale); render();
+    const p = DB.personale.find(x=>x.id===el.dataset.delPersonale);
+    if(p) await spostaInCestino('personale', `${p.nome} ${p.cognome}`, p.mansione||'', p);
+    DB.personale = DB.personale.filter(x=>x.id!==el.dataset.delPersonale);
+    await sset(KEYS.personale, DB.personale); toast('Dipendente spostato nel Cestino'); render();
   }));
   const savePersonaleBtn = app.querySelector('[data-save-personale]');
   if(savePersonaleBtn) savePersonaleBtn.addEventListener('click', async ()=>{
@@ -3420,8 +5252,10 @@ function attachHandlers(){
   app.querySelectorAll('[data-edit-dest]').forEach(el=>el.addEventListener('click', ()=>go({name:'destinatario-edit', id:el.dataset.editDest})));
   app.querySelectorAll('[data-del-dest]').forEach(el=>el.addEventListener('click', async ()=>{
     if(!confirm('Eliminare questo destinatario?')) return;
-    DB.destinatari = DB.destinatari.filter(c=>c.id!==el.dataset.delDest);
-    await sset(KEYS.destinatari, DB.destinatari); render();
+    const d = DB.destinatari.find(x=>x.id===el.dataset.delDest);
+    if(d) await spostaInCestino('destinatario', d.nome, d.ruolo||'', d);
+    DB.destinatari = DB.destinatari.filter(x=>x.id!==el.dataset.delDest);
+    await sset(KEYS.destinatari, DB.destinatari); toast('Destinatario spostato nel Cestino'); render();
   }));
   // ruolo destinatario: mostra il campo libero solo quando si sceglie "Altro", senza ridisegnare
   // la pagina (per non perdere gli altri campi non ancora salvati).
@@ -3451,9 +5285,95 @@ function attachHandlers(){
     await sset(KEYS.frasi, DB.frasi); toast('Frase aggiunta'); render();
   }));
   app.querySelectorAll('[data-del-frase]').forEach(el=>el.addEventListener('click', async ()=>{
-    DB.frasi = DB.frasi.filter(f=>f.id!==el.dataset.delFrase);
+    const f = DB.frasi.find(x=>x.id===el.dataset.delFrase);
+    if(f) await spostaInCestino('frase', f.testo.slice(0,60)+(f.testo.length>60?'…':''), CAT_LABELS[f.categoria]||f.categoria, f);
+    DB.frasi = DB.frasi.filter(x=>x.id!==el.dataset.delFrase);
     await sset(KEYS.frasi, DB.frasi); render();
   }));
+  // libreria note riunioni (Allegato 8) — 6 categorie fisse (richiesta 24/09/2026 via commento
+  // sull'Artifact), stesso meccanismo di aggiunta/eliminazione "per categoria" della Libreria osservanze.
+  app.querySelectorAll('[data-add-frase-riunione]').forEach(el=>el.addEventListener('click', async ()=>{
+    const cat = el.dataset.addFraseRiunione; const ta = document.getElementById('new-frase-riunione-'+cat);
+    const testo = ta.value.trim(); if(!testo) return;
+    DB.frasiRiunione.push({id:uid(), categoria:cat, testo});
+    await sset(KEYS.frasiRiunione, DB.frasiRiunione); toast('Frase aggiunta'); render();
+  }));
+  app.querySelectorAll('[data-del-frase-riunione]').forEach(el=>el.addEventListener('click', async ()=>{
+    const f = DB.frasiRiunione.find(x=>x.id===el.dataset.delFraseRiunione);
+    if(f) await spostaInCestino('fraseRiunione', f.testo.slice(0,60)+(f.testo.length>60?'…':''), CAT_LABELS_RIUNIONE[f.categoria]||'Libreria note riunioni', f);
+    DB.frasiRiunione = DB.frasiRiunione.filter(x=>x.id!==el.dataset.delFraseRiunione);
+    await sset(KEYS.frasiRiunione, DB.frasiRiunione); render();
+  }));
+  app.querySelectorAll('[data-note-cse-check]').forEach(el=>el.addEventListener('change', ()=>{
+    const list = CURRENT_VERBALE.noteCSESelFrasi; const fid = el.dataset.frase;
+    const i = list.indexOf(fid);
+    if(el.checked && i<0) list.push(fid);
+    if(!el.checked && i>=0) list.splice(i,1);
+  }));
+  app.querySelectorAll('[data-note-cse-select-all]').forEach(el=>el.addEventListener('change', ()=>{
+    const cat = el.dataset.noteCseSelectAll;
+    const list = CURRENT_VERBALE.noteCSESelFrasi;
+    const items = (DB.frasiRiunione||[]).filter(f=>f.categoria===cat);
+    if(el.checked){
+      items.forEach(f=>{ if(!list.includes(f.id)) list.push(f.id); });
+    } else {
+      items.forEach(f=>{ const i=list.indexOf(f.id); if(i>=0) list.splice(i,1); });
+    }
+    render();
+  }));
+
+  // "Verifica di eventuali variazioni progettuali" (Ordine del giorno): stessa libreria, ma limitata
+  // alla sola categoria "variazioniProgettuali" (richiesta 24/09/2026 via commento sull'Artifact).
+  // Il testo libero e' live-bound per lo stesso motivo di w-ver-*-testo sopra (il "seleziona tutte"
+  // qui sotto chiama render(), che senza questo fix perderebbe il testo appena digitato).
+  const wOgVariazioniTesto = document.getElementById('w-og-variazioni-testo');
+  if(wOgVariazioniTesto) wOgVariazioniTesto.addEventListener('input', ()=>{
+    CURRENT_VERBALE.ordineGiorno.variazioni.testo = wOgVariazioniTesto.value;
+  });
+  app.querySelectorAll('[data-og-variazioni-check]').forEach(el=>el.addEventListener('change', ()=>{
+    const list = CURRENT_VERBALE.ordineGiorno.variazioni.selFrasi; const fid = el.dataset.frase;
+    const i = list.indexOf(fid);
+    if(el.checked && i<0) list.push(fid);
+    if(!el.checked && i>=0) list.splice(i,1);
+  }));
+  app.querySelectorAll('[data-og-variazioni-select-all]').forEach(el=>el.addEventListener('change', ()=>{
+    const list = CURRENT_VERBALE.ordineGiorno.variazioni.selFrasi;
+    const items = (DB.frasiRiunione||[]).filter(f=>f.categoria==='variazioniProgettuali');
+    if(el.checked){
+      items.forEach(f=>{ if(!list.includes(f.id)) list.push(f.id); });
+    } else {
+      items.forEach(f=>{ const i=list.indexOf(f.id); if(i>=0) list.splice(i,1); });
+    }
+    render();
+  }));
+
+  // "Verifiche del CSE" (POS/art.102/organizzazione): stessa libreria e stesso meccanismo di
+  // "Note del CSE" sopra, ma una selezione indipendente per ciascuno dei tre punti (richiesta
+  // 24/09/2026 via commento sull'Artifact). Il testo libero e' live-bound (aggiornato a ogni
+  // tasto premuto) apposta, cosi' il render() scatenato da "seleziona tutte" qui sotto non
+  // rischia di perdere quanto digitato — stesso bug gia' incontrato con #w-note-cse/#w-og-variazioni-testo.
+  app.querySelectorAll('[data-ver-frase-check]').forEach(el=>el.addEventListener('change', ()=>{
+    const key = el.dataset.verFraseCheck;
+    const list = CURRENT_VERBALE.verifiche[key].selFrasi; const fid = el.dataset.frase;
+    const i = list.indexOf(fid);
+    if(el.checked && i<0) list.push(fid);
+    if(!el.checked && i>=0) list.splice(i,1);
+  }));
+  app.querySelectorAll('[data-ver-select-all-key]').forEach(el=>el.addEventListener('change', ()=>{
+    const key = el.dataset.verSelectAllKey; const cat = el.dataset.verSelectAllCat;
+    const list = CURRENT_VERBALE.verifiche[key].selFrasi;
+    const items = (DB.frasiRiunione||[]).filter(f=>f.categoria===cat);
+    if(el.checked){
+      items.forEach(f=>{ if(!list.includes(f.id)) list.push(f.id); });
+    } else {
+      items.forEach(f=>{ const i=list.indexOf(f.id); if(i>=0) list.splice(i,1); });
+    }
+    render();
+  }));
+  ['pos','art102','organizzazione'].forEach(key=>{
+    const el = document.getElementById('w-ver-'+key+'-testo');
+    if(el) el.addEventListener('input', ()=>{ CURRENT_VERBALE.verifiche[key].testo = el.value; });
+  });
 
   // libreria fasi di lavoro
   app.querySelectorAll('[data-add-fase-voce]').forEach(el=>el.addEventListener('click', async ()=>{
@@ -3465,14 +5385,18 @@ function attachHandlers(){
   }));
   app.querySelectorAll('[data-del-fase-voce]').forEach(el=>el.addEventListener('click', async ()=>{
     const ci = parseInt(el.dataset.delFaseVoce,10), vi = parseInt(el.dataset.voceIdx,10);
-    DB.fasiLavoro[ci].voci.splice(vi,1);
+    const cat = DB.fasiLavoro[ci], voce = cat.voci[vi];
+    if(voce!==undefined) await spostaInCestino('faseVoce', voce, cat.categoria, {categoriaNome:cat.categoria, voce});
+    cat.voci.splice(vi,1);
     await sset(KEYS.fasiLavoro, DB.fasiLavoro); render();
   }));
   app.querySelectorAll('[data-del-fase-categoria]').forEach(el=>el.addEventListener('click', async ()=>{
     const ci = parseInt(el.dataset.delFaseCategoria,10);
-    if(!confirm('Eliminare l\'intera categoria "'+DB.fasiLavoro[ci].categoria+'" e tutte le sue voci?')) return;
+    if(!confirm(`Eliminare l'intera categoria "${DB.fasiLavoro[ci].categoria}" e tutte le sue voci? Resterà nel Cestino per ${CESTINO_GIORNI_RITENZIONE} giorni.`)) return;
+    const cat = DB.fasiLavoro[ci];
+    await spostaInCestino('faseCategoria', cat.categoria, `${cat.voci.length} voci`, cat);
     DB.fasiLavoro.splice(ci,1);
-    await sset(KEYS.fasiLavoro, DB.fasiLavoro); toast('Categoria eliminata'); render();
+    await sset(KEYS.fasiLavoro, DB.fasiLavoro); toast('Categoria spostata nel Cestino'); render();
   }));
   const addFaseCatBtn = app.querySelector('[data-add-fase-categoria]');
   if(addFaseCatBtn) addFaseCatBtn.addEventListener('click', async ()=>{
@@ -3534,6 +5458,44 @@ function attachHandlers(){
   const logoutBtn = app.querySelector('[data-logout]');
   if(logoutBtn) logoutBtn.addEventListener('click', ()=>{
     go({name:'accesso'});
+  });
+
+  // account online (Firebase — sincronizzazione multi-dispositivo)
+  app.querySelectorAll('[data-fb-toggle]').forEach(el=>el.addEventListener('click', (ev)=>{
+    ev.preventDefault();
+    FB_UI_MODE = el.dataset.fbToggle;
+    render();
+  }));
+  const fbSubmitBtn = app.querySelector('[data-fb-submit]');
+  if(fbSubmitBtn) fbSubmitBtn.addEventListener('click', async ()=>{
+    const mode = fbSubmitBtn.dataset.fbSubmit;
+    const emailEl = document.getElementById('f-fb-email');
+    const pwdEl = document.getElementById('f-fb-pwd');
+    const errBox = document.getElementById('fb-auth-err');
+    const email = (emailEl && emailEl.value || '').trim();
+    const pwd = (pwdEl && pwdEl.value) || '';
+    if(errBox) errBox.textContent = '';
+    if(!email || !pwd){ if(errBox) errBox.textContent = 'Inserisci email e password.'; return; }
+    fbSubmitBtn.disabled = true;
+    const prevLabel = fbSubmitBtn.textContent;
+    fbSubmitBtn.textContent = 'Attendere…';
+    try{
+      const fb = await waitForFB();
+      if(!fb || !fb.ready) throw new Error('Servizio account online non disponibile: controlla la connessione a Internet e riprova.');
+      if(mode==='signup') await fb.signUp(email, pwd); else await fb.signIn(email, pwd);
+      toast(mode==='signup' ? 'Account creato! I tuoi dati verranno sincronizzati automaticamente.' : 'Accesso effettuato.');
+    }catch(e){
+      if(errBox) errBox.textContent = e.message || 'Operazione non riuscita.';
+    }finally{
+      fbSubmitBtn.disabled = false;
+      fbSubmitBtn.textContent = prevLabel;
+    }
+  });
+  const fbLogoutBtn = app.querySelector('[data-fb-logout]');
+  if(fbLogoutBtn) fbLogoutBtn.addEventListener('click', async ()=>{
+    if(!confirm('Disconnettere l\'account online? I dati restano su questo dispositivo ma non verranno più sincronizzati finché non accedi di nuovo.')) return;
+    try{ const fb = await waitForFB(); if(fb) await fb.signOutUser(); }
+    catch(e){ console.error('disconnessione account online non riuscita', e); }
   });
 
   // area admin nascosta
@@ -3599,6 +5561,8 @@ function attachHandlers(){
   if(fn) fn.addEventListener('input', ()=>{ ROUTE.filters.numero=fn.value; render(); });
   const fd = document.getElementById('filt-data');
   if(fd) fd.addEventListener('change', ()=>{ ROUTE.filters.data=fd.value; render(); });
+  const ft = document.getElementById('filt-tipo');
+  if(ft) ft.addEventListener('change', ()=>{ ROUTE.filters.tipo=ft.value; render(); });
 
   app.querySelectorAll('[data-open-verbale]').forEach(el=>el.addEventListener('click', async ()=>{
     CURRENT_VERBALE = await loadVerbale(el.dataset.openVerbale);
@@ -3609,14 +5573,14 @@ function attachHandlers(){
     const src = await loadVerbale(el.dataset.dupVerbale);
     if(!src){ toast('Verbale non trovato'); return; }
     const cantiere = DB.cantieri.find(c=>c.id===src.cantiereId) || {id:src.cantiereId, nome:src.cantiereNome};
-    const n = nextNumero(cantiere.id);
+    const n = nextNumero(cantiere.id, src.tipo||'visita');
     CURRENT_VERBALE = {...JSON.parse(JSON.stringify(src)), id:uid(), numero:n.numero, anno:n.anno,
       data:todayISO(), stato:'bozza', createdAt:Date.now()};
     toast('Verbale duplicato'); go({name:'wizard', step:'cantiere'});
   }));
   app.querySelectorAll('[data-del-verbale]').forEach(el=>el.addEventListener('click', async ()=>{
-    if(!confirmWithKeyword('Eliminare definitivamente questo verbale? Il contenuto compilato e le foto andranno persi e l\'operazione non è reversibile.', 'GDG')) return;
-    await deleteVerbale(el.dataset.delVerbale); render();
+    if(!confirmWithKeyword(`Eliminare questo verbale? Sparirà dall'archivio, ma resterà nel Cestino (con foto e contenuto compilato) per ${CESTINO_GIORNI_RITENZIONE} giorni prima di essere rimosso per sempre.`, 'GDG')) return;
+    await deleteVerbale(el.dataset.delVerbale); toast('Verbale spostato nel Cestino'); render();
   }));
 
   // wizard: passaggio Cantiere — cambiando il cantiere selezionato, sito/committente/responsabile lavori
@@ -3630,7 +5594,7 @@ function attachHandlers(){
     if(g('w-sito')) g('w-sito').value = c.sito||'';
     if(g('w-committente')) g('w-committente').value = c.committente||'';
     if(g('w-rl')) g('w-rl').value = c.responsabileLavori||'';
-    const n = nextNumero(c.id);
+    const n = nextNumero(c.id, (CURRENT_VERBALE&&CURRENT_VERBALE.tipo)||'visita');
     if(g('w-numero')) g('w-numero').value = n.numero;
     if(g('w-anno')) g('w-anno').value = n.anno;
   });
@@ -3652,7 +5616,7 @@ function attachHandlers(){
     const sel = document.getElementById('w-add-impresa');
     const impresa = DB.imprese.find(i=>i.id===sel.value);
     if(!impresa) return;
-    CURRENT_VERBALE.impreseCoinvolte.push({impresaId:impresa.id, nome:impresa.nome, ruoli:[IMPRESA_RUOLI[0]], preposto:'', firmaPrepostoImg:null});
+    CURRENT_VERBALE.impreseCoinvolte.push({impresaId:impresa.id, nome:impresa.nome, ruoli:[IMPRESA_RUOLI[0]], preposto:'', firmaPrepostoImg:null, referenteNome:'', referenteMansione:'', referenteNomeAltro:false, presente:true});
     render();
   });
   app.querySelectorAll('[data-rm-impresa-verbale]').forEach(el=>el.addEventListener('click', ()=>{
@@ -3666,6 +5630,48 @@ function attachHandlers(){
     if(i>=0) ruoli.splice(i,1); else ruoli.push(r);
     ic.ruoli = ruoli; delete ic.ruolo;
     render();
+  }));
+  // verbale di riunione (Allegato 8): referente per impresa (nome/mansione) — aggiornamento diretto
+  // sul modello, senza render(), per non perdere il testo digitato se l'utente non naviga via subito
+  // (stesso schema di .altro-presente-input in wizPresenti()).
+  app.querySelectorAll('[data-referente-nome-idx]').forEach(el=>el.addEventListener('input', ()=>{
+    const ic = CURRENT_VERBALE.impreseCoinvolte[+el.dataset.referenteNomeIdx];
+    if(ic) ic.referenteNome = el.value;
+  }));
+  app.querySelectorAll('[data-referente-mansione-idx]').forEach(el=>el.addEventListener('input', ()=>{
+    const ic = CURRENT_VERBALE.impreseCoinvolte[+el.dataset.referenteMansioneIdx];
+    if(ic) ic.referenteMansione = el.value;
+  }));
+  // referente in riunione: nome scelto da tendina tra i dipendenti dell'impresa (richiesta 24/09/2026,
+  // commento sull'Artifact) — stesso meccanismo tendina+Altro del Preposto. Se il dipendente scelto ha
+  // una mansione archiviata e il campo "Mansione del referente" e' ancora vuoto, lo precompilo (senza
+  // mai sovrascrivere una mansione gia' scritta a mano).
+  app.querySelectorAll('[data-referente-select-idx]').forEach(el=>el.addEventListener('change', ()=>{
+    const idx = +el.dataset.referenteSelectIdx;
+    const ic = CURRENT_VERBALE.impreseCoinvolte[idx];
+    if(!ic) return;
+    ic.referenteNomeAltro = (el.value==='__altro__');
+    ic.referenteNome = (el.value==='__altro__') ? '' : el.value;
+    if(el.value!=='__altro__' && !ic.referenteMansione){
+      const p = candidatiReferenteImpresa(ic.impresaId).find(p=>`${p.nome} ${p.cognome}`===el.value);
+      if(p && p.mansione) ic.referenteMansione = p.mansione;
+    }
+    render();
+  }));
+  // impresa "presente a questa riunione" — distinto dal ruolo (coinvolgimento nel cantiere): mostra/
+  // nasconde i campi del referente in riunione. Richiesta 24/09/2026, commento sull'Artifact
+  // ("differenzia imprese coinvolte nel cantiere e imprese presenti nella riunione"). I campi di questo
+  // passaggio sono già "live" (vedi data-referente-nome-idx sopra), quindi il render() qui sotto non
+  // perde nulla di non ancora salvato.
+  app.querySelectorAll('[data-impresa-presente-idx]').forEach(el=>el.addEventListener('change', ()=>{
+    const ic = CURRENT_VERBALE.impreseCoinvolte[+el.dataset.impresaPresenteIdx];
+    if(ic) ic.presente = el.checked;
+    render();
+  }));
+  // verbale di riunione: luogo (in cantiere / altro) — chip esclusivo, richiede render() perché mostra/
+  // nasconde il campo di testo "Altro luogo".
+  app.querySelectorAll('[data-set-luogo-riunione]').forEach(el=>el.addEventListener('click', ()=>{
+    CURRENT_VERBALE.luogoRiunione = el.dataset.setLuogoRiunione; render();
   }));
 
   // presenti step: ricordo quali riquadri impresa l'utente ha aperto, cosi' un successivo render()
@@ -3706,6 +5712,13 @@ function attachHandlers(){
   app.querySelectorAll('[data-rm-fase-foto]').forEach(el=>el.addEventListener('click', ()=>{
     CURRENT_VERBALE.fotoFasi.splice(+el.dataset.rmFaseFoto,1); render();
   }));
+  // "Ricatta" (23/09/2026): rifà solo la foto di una card già presente, mantenendo didascalia/categoria/fase già scelte
+  app.querySelectorAll('[data-fase-photo-retake]').forEach(el=>el.addEventListener('change', e=>{
+    const idx = +el.dataset.fasePhotoRetake;
+    const file = e.target.files[0];
+    if(!file) return;
+    resizeImage(file, dataUrl=>{ CURRENT_VERBALE.fotoFasi[idx].img = dataUrl; render(); });
+  }));
   app.querySelectorAll('[data-fase-cap]').forEach(el=>el.addEventListener('input', ()=>{
     CURRENT_VERBALE.fotoFasi[+el.dataset.faseCap].caption = el.value;
   }));
@@ -3730,8 +5743,13 @@ function attachHandlers(){
   // riquadri "a tendina" Note/Osservanze/Note specifiche/Prescrizioni: ricordo se l'utente li ha aperti
   // o chiusi, cosi' un successivo render() (es. dopo "seleziona tutte") non li richiude da solo.
   app.querySelectorAll('.phrase-cat[class]').forEach(el=>{
-    const cat = [...el.classList].find(c=>c in CAT_LABELS);
+    const cat = [...el.classList].find(c=>c in CAT_LABELS || c in CAT_LABELS_RIUNIONE);
     if(cat) el.addEventListener('toggle', ()=>{ PHRASE_CAT_OPEN[cat] = el.open; });
+  });
+  // Libreria fasi di lavoro: le categorie sono ora un menù a tendina (richiesta 23/09/2026);
+  // ricordo quali l'utente ha aperto così un successivo render() (es. dopo "aggiungi voce") non le richiude da solo.
+  app.querySelectorAll('.fasi-lib-cat[data-fase-cat-nome]').forEach(el=>{
+    el.addEventListener('toggle', ()=>{ FASI_LIB_CAT_OPEN[el.dataset.faseCatNome] = el.open; });
   });
   app.querySelectorAll('[data-osserv-check]').forEach(el=>el.addEventListener('change', ()=>{
     const active = ROUTE.osservanzaImpresaId || CURRENT_VERBALE.impreseCoinvolte[0].impresaId;
@@ -3768,6 +5786,14 @@ function attachHandlers(){
     const oss = CURRENT_VERBALE.osservanze.find(o=>o.impresaId===active);
     oss.foto.splice(+el.dataset.rmOssFoto,1); render();
   }));
+  app.querySelectorAll('[data-oss-photo-retake]').forEach(el=>el.addEventListener('change', e=>{
+    const active = ROUTE.osservanzaImpresaId || CURRENT_VERBALE.impreseCoinvolte[0].impresaId;
+    const oss = CURRENT_VERBALE.osservanze.find(o=>o.impresaId===active);
+    const idx = +el.dataset.ossPhotoRetake;
+    const file = e.target.files[0];
+    if(!file) return;
+    resizeImage(file, dataUrl=>{ oss.foto[idx].img = dataUrl; render(); });
+  }));
   app.querySelectorAll('[data-oss-cap]').forEach(el=>el.addEventListener('input', ()=>{
     const active = ROUTE.osservanzaImpresaId || CURRENT_VERBALE.impreseCoinvolte[0].impresaId;
     const oss = CURRENT_VERBALE.osservanze.find(o=>o.impresaId===active);
@@ -3796,6 +5822,12 @@ function attachHandlers(){
   app.querySelectorAll('[data-rm-susp-fase-foto]').forEach(el=>el.addEventListener('click', ()=>{
     CURRENT_VERBALE.sospensione.fotoFase.splice(+el.dataset.rmSuspFaseFoto,1); render();
   }));
+  app.querySelectorAll('[data-susp-fase-photo-retake]').forEach(el=>el.addEventListener('change', e=>{
+    const idx = +el.dataset.suspFasePhotoRetake;
+    const file = e.target.files[0];
+    if(!file) return;
+    resizeImage(file, dataUrl=>{ CURRENT_VERBALE.sospensione.fotoFase[idx].img = dataUrl; render(); });
+  }));
   app.querySelectorAll('[data-susp-fase-cap]').forEach(el=>el.addEventListener('input', ()=>{
     CURRENT_VERBALE.sospensione.fotoFase[+el.dataset.suspFaseCap].caption = el.value;
   }));
@@ -3812,6 +5844,12 @@ function attachHandlers(){
   app.querySelectorAll('[data-rm-susp-rip-foto]').forEach(el=>el.addEventListener('click', ()=>{
     CURRENT_VERBALE.sospensione.fotoRipristino.splice(+el.dataset.rmSuspRipFoto,1); render();
   }));
+  app.querySelectorAll('[data-susp-rip-photo-retake]').forEach(el=>el.addEventListener('change', e=>{
+    const idx = +el.dataset.suspRipPhotoRetake;
+    const file = e.target.files[0];
+    if(!file) return;
+    resizeImage(file, dataUrl=>{ CURRENT_VERBALE.sospensione.fotoRipristino[idx].img = dataUrl; render(); });
+  }));
   app.querySelectorAll('[data-susp-rip-cap]').forEach(el=>el.addEventListener('input', ()=>{
     CURRENT_VERBALE.sospensione.fotoRipristino[+el.dataset.suspRipCap].caption = el.value;
   }));
@@ -3826,6 +5864,40 @@ function attachHandlers(){
     ic.prepostoAltro = (el.value==='__altro__');
     ic.preposto = (el.value==='__altro__') ? '' : el.value;
     render();
+  }));
+
+  // Ordine del giorno (verbale di riunione) — "Verifica della documentazione consegnata": stesso
+  // meccanismo tendina+Altro del Preposto sopra, per i 3 campi affidataria/subappalto/autonomi.
+  app.querySelectorAll('[data-og-vdoc-select]').forEach(el=>el.addEventListener('change', ()=>{
+    const key = el.dataset.ogVdocSelect; const vd = CURRENT_VERBALE.ordineGiorno.verificaDoc;
+    vd[key+'Altro'] = (el.value==='__altro__');
+    vd[key] = (el.value==='__altro__') ? '' : el.value;
+    // salvo prima gli altri campi di questo stesso passaggio (es. il testo delle "variazioni
+    // progettuali", ancora solo nel DOM) cosi' il render() qui sotto non li perde.
+    persistWizardFields('ordinegiorno');
+    render();
+  }));
+  app.querySelectorAll('[data-og-vdoc-text]').forEach(el=>el.addEventListener('input', ()=>{
+    CURRENT_VERBALE.ordineGiorno.verificaDoc[el.dataset.ogVdocText] = el.value;
+  }));
+
+  // Rappresentanti per la sicurezza (RLS/RLST) — stesso meccanismo tendina+Altro, per scegliere
+  // l'impresa (affidataria/esecutrice) a cui si riferisce ciascuna riga (richiesta 24/09/2026).
+  app.querySelectorAll('[data-rls-impresa-select]').forEach(el=>el.addEventListener('change', ()=>{
+    const idx = +el.dataset.rlsImpresaSelect;
+    const r = CURRENT_VERBALE.rls[idx];
+    if(!r) return;
+    r.impresaAltro = (el.value==='__altro__');
+    r.impresaNome = (el.value==='__altro__') ? '' : el.value;
+    // salvo prima il resto del passaggio (es. il "Nome e cognome" ancora solo nel DOM sulle altre
+    // righe) cosi' il render() qui sotto non lo perde — stesso fix gia' applicato sopra al vdoc-select.
+    persistWizardFields('rls');
+    render();
+  }));
+  app.querySelectorAll('[data-rls-impresa-text]').forEach(el=>el.addEventListener('input', ()=>{
+    const idx = +el.dataset.rlsImpresaText;
+    const r = CURRENT_VERBALE.rls[idx];
+    if(r) r.impresaNome = el.value;
   }));
 
   // firma grafica — disegno a mano libera (pointer events: dito/mouse/pen) o immagine caricata.
@@ -3884,7 +5956,17 @@ function attachHandlers(){
     const key = inp.dataset.sigFile;
     const file = e.target.files[0];
     if(!file) return;
-    resizeImage(file, dataUrl=>{ setFirmaImg(CURRENT_VERBALE, key, dataUrl); toast('Firma caricata'); render(); });
+    // processFirmaImage() (non resizeImage()): esporta in PNG e rimuove lo sfondo chiaro, cosi' una
+    // firma caricata da foto si sovrappone bene al documento — vedi nota sopra la funzione.
+    processFirmaImage(file, dataUrl=>{ setFirmaImg(CURRENT_VERBALE, key, dataUrl); toast('Firma caricata'); render(); });
+  }));
+  // scarica la firma salvata (disegnata o caricata) come file PNG a se' stante, per riusarla fuori
+  // dall'app — richiesta 24/09/2026, commento sull'Artifact.
+  app.querySelectorAll('[data-sig-download]').forEach(btn=>btn.addEventListener('click', ()=>{
+    const wrap = btn.closest('.sig-pad-wrap');
+    const img = wrap ? wrap.querySelector('.sig-preview img') : null;
+    if(!img || !img.src){ toast('Nessuna firma da scaricare.'); return; }
+    downloadFirmaPng(img.src, btn.dataset.sigFilename || 'Firma');
   }));
 
   // destinatari
@@ -3940,10 +6022,6 @@ function persistWizardFields(step){
     const sel = g('w-cantiere');
     if(sel && sel.value){
       const c = DB.cantieri.find(x=>x.id===sel.value);
-      /* comune/provincia/tipologiaLavoro non hanno un campo dedicato nel wizard: seguono sempre
-         il cantiere selezionato (come già fa blankVerbale() alla creazione), altrimenti restavano
-         quelli del cantiere iniziale anche dopo aver cambiato selezione nel menu a tendina, facendo
-         comparire nel PDF il comune/tipologia del PRIMO cantiere invece di quello scelto. */
       if(c){
         v.cantiereId=c.id; v.cantiereNome=c.nome;
         v.comune = c.comune||''; v.provincia = provinciaSigla(c.provincia);
@@ -3984,6 +6062,35 @@ function persistWizardFields(step){
     v.impreseCoinvolte.forEach((ic,idx)=>{ const el=g(''); }); // placeholder no-op (live-bound above)
     if(g('w-extra-label')) v.firmaExtra.label = g('w-extra-label').value;
     if(g('w-extra-nome')) v.firmaExtra.nome = g('w-extra-nome').value;
+  } else if(step==='incontro'){
+    // passaggio proprio del verbale di riunione (Allegato 8) — vedi wizIncontro()
+    if(g('w-luogo-altro')) v.luogoAltro = g('w-luogo-altro').value;
+    if(g('w-ora-inizio')) v.oraInizio = g('w-ora-inizio').value;
+    if(g('w-ora-fine')) v.oraFine = g('w-ora-fine').value;
+    if(g('w-data-redazione')) v.dataRedazione = g('w-data-redazione').value;
+    if(g('w-ora-redazione')) v.oraRedazione = g('w-ora-redazione').value;
+  } else if(step==='ordinegiorno'){
+    const og = v.ordineGiorno;
+    if(g('w-og-variazioni-chk')) og.variazioni.checked = g('w-og-variazioni-chk').checked;
+    if(g('w-og-variazioni-testo')) og.variazioni.testo = g('w-og-variazioni-testo').value;
+    if(g('w-og-verificadoc-chk')) og.verificaDoc.checked = g('w-og-verificadoc-chk').checked;
+    // affidataria/subappalto/autonomi: menù a tendina + eventuale campo libero, legati live in
+    // attachHandlers() (data-og-vdoc-select/data-og-vdoc-text) — non serve rileggerli qui.
+  } else if(step==='verifiche'){
+    ['pos','art102','organizzazione'].forEach(key=>{
+      if(g('w-ver-'+key+'-chk')) v.verifiche[key].checked = g('w-ver-'+key+'-chk').checked;
+      if(g('w-ver-'+key+'-testo')) v.verifiche[key].testo = g('w-ver-'+key+'-testo').value;
+    });
+  } else if(step==='rls'){
+    v.rls.forEach((r,idx)=>{
+      if(g('w-rls-chk-'+idx)) r.checked = g('w-rls-chk-'+idx).checked;
+      if(g('w-rls-nome-'+idx)) r.nome = g('w-rls-nome-'+idx).value;
+    });
+    if(g('w-rls-assenti')) v.rlsAssenti = g('w-rls-assenti').checked;
+    if(g('w-rls-note')) v.rlsNote = g('w-rls-note').value;
+  } else if(step==='note'){
+    if(g('w-prossima-riunione')) v.prossimaRiunione = g('w-prossima-riunione').value;
+    if(g('w-note-cse')) v.noteCSE = g('w-note-cse').value;
   }
 }
 
